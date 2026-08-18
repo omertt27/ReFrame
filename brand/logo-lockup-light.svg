@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 64" width="300" height="64">
+  <path d="M6,24 L6,6 L24,6" stroke="#f4a340" stroke-width="5" stroke-linecap="square" fill="none"/>
+  <path d="M40,58 L58,58 L58,40" stroke="#f4a340" stroke-width="5" stroke-linecap="square" fill="none"/>
+  <text x="80" y="43" font-family="'Space Grotesk', system-ui, sans-serif" font-size="34" font-weight="600" fill="#111113" letter-spacing="-0.3">ReFrame</text>
+</svg>
