@@ -6,9 +6,10 @@ import { diffLines } from "diff";
 import { describe, expect, it } from "vitest";
 
 import { applyClassMutation } from "../src/mutate/class.js";
+import { moveChild } from "../src/mutate/move.js";
 import { setUsageProp } from "../src/mutate/prop.js";
 import { buildComponentGraph } from "../src/parse.js";
-import { resolveAllUsages, resolveSharedClassTarget, resolveUsage } from "../src/resolve.js";
+import { resolveAllUsages, resolveDefinition, resolveSharedClassTarget, resolveUsage } from "../src/resolve.js";
 import { printFile } from "../src/write.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -178,6 +179,57 @@ describe("clsx()/cn() class edit", () => {
     expect(() => applyClassMutation(target, { op: "setClsxArg", index: 0, value: "x" })).toThrow(
       /doesn't recognize/,
     );
+  });
+});
+
+function componentOrder(source: string, names: string[]): string[] {
+  return names
+    .map((name) => ({ name, index: source.indexOf(`<${name}`) }))
+    .sort((a, b) => a.index - b.index)
+    .map((p) => p.name);
+}
+
+describe("move / reorder children", () => {
+  const HOME_ORDER = ["Navbar", "Hero", "Card", "Button", "Footer"];
+
+  it("moves an element backward to a target index", () => {
+    const { graph, originalSources } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    moveChild(home.rootElement, 2, 1); // Card (2) -> before Hero (1)
+
+    const before = originalSources.get("Home.tsx")!;
+    const after = printFile(graph, "Home.tsx");
+    expect(componentOrder(after, HOME_ORDER)).toEqual(["Navbar", "Card", "Hero", "Button", "Footer"]);
+    expect(changedFiles(graph, originalSources)).toEqual(new Set(["Home.tsx"]));
+    // Exactly the two swapped lines change — indentation travels with the
+    // moved element rather than leaving a reformatting mess behind.
+    expect(changedLineCount(before, after)).toBeLessThanOrEqual(4);
+  });
+
+  it("moves an element forward to a target index", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    moveChild(home.rootElement, 0, 2); // Navbar (0) -> index 2
+
+    const after = printFile(graph, "Home.tsx");
+    expect(componentOrder(after, HOME_ORDER)).toEqual(["Hero", "Card", "Navbar", "Button", "Footer"]);
+  });
+
+  it("is a no-op when the target index equals the source index", () => {
+    const { graph, originalSources } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    moveChild(home.rootElement, 1, 1);
+
+    expect(printFile(graph, "Home.tsx")).toBe(originalSources.get("Home.tsx"));
+  });
+
+  it("rejects an out-of-range target index", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    expect(() => moveChild(home.rootElement, 0, 99)).toThrow(/out of range/);
   });
 });
 

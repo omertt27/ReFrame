@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { createTwoFilesPatch } from "diff";
 
 import { applyClassMutation } from "./mutate/class.js";
+import { moveChild } from "./mutate/move.js";
 import { setUsageProp } from "./mutate/prop.js";
 import { buildComponentGraph } from "./parse.js";
-import { resolveSharedClassTarget, resolveUsage } from "./resolve.js";
+import { resolveDefinition, resolveSharedClassTarget, resolveUsage } from "./resolve.js";
 import { printFile } from "./write.js";
 
 function loadDir(dir: string) {
@@ -31,7 +32,8 @@ function main() {
       "Usage:\n" +
         "  cli <dir> shared-class <Component> <consequent|alternate> <value>\n" +
         "  cli <dir> instance-prop <Component> <usageFile> <propName> <value>\n" +
-        "  cli <dir> clsx-arg <Component> <argIndex> <value>",
+        "  cli <dir> clsx-arg <Component> <argIndex> <value>\n" +
+        "  cli <dir> move <Component> <fromIndex> <toIndex>",
     );
     process.exit(1);
   }
@@ -52,6 +54,10 @@ function main() {
     const [component, index, value] = rest;
     const target = resolveSharedClassTarget(graph, component!);
     applyClassMutation(target, { op: "setClsxArg", index: Number(index), value: value! });
+  } else if (command === "move") {
+    const [component, fromIndex, toIndex] = rest;
+    const def = resolveDefinition(graph, component!);
+    moveChild(def.rootElement, Number(fromIndex), Number(toIndex));
   } else {
     console.error(`Unknown command "${command}"`);
     process.exit(1);

@@ -5,11 +5,23 @@ function jsxChildren(children: t.JSXElement["children"]): t.JSXElement[] {
   return children.filter((c): c is t.JSXElement => t.isJSXElement(c));
 }
 
+function isWhitespaceText(node: t.JSXElement["children"][number] | undefined): node is t.JSXText {
+  return !!node && t.isJSXText(node) && node.value.trim() === "";
+}
+
+/** The start of an element's "chunk" — its raw index, or the whitespace-only
+ * text node immediately before it, if any (the indentation that visually
+ * belongs to it). Moving the whitespace along with the element is what keeps
+ * a reorder's diff to the lines that actually moved. */
+function chunkStart(children: t.JSXElement["children"], elementRawIndex: number): number {
+  const prev = children[elementRawIndex - 1];
+  return isWhitespaceText(prev) ? elementRawIndex - 1 : elementRawIndex;
+}
+
 /**
- * Moves a JSX element to a new index among its parent's element children,
- * indexed by element position (whitespace/text nodes are skipped when
- * counting, but preserved in place otherwise — this is a reorder, not a
- * reformat).
+ * Moves a JSX element to a new index among its parent's element children
+ * (indexed by element position, ignoring whitespace/text nodes when
+ * counting), carrying its leading indentation along with it.
  */
 export function moveChild(parent: t.JSXElement | t.JSXFragment, fromIndex: number, toIndex: number): void {
   const elements = jsxChildren(parent.children);
@@ -23,11 +35,13 @@ export function moveChild(parent: t.JSXElement | t.JSXFragment, fromIndex: numbe
   if (fromIndex === toIndex) return;
 
   const target = elements[toIndex]!;
-  const rawFromIndex = parent.children.indexOf(moved);
-  const movingForward = toIndex > fromIndex;
+  const movedRawIndex = parent.children.indexOf(moved);
+  const movedChunkStart = chunkStart(parent.children, movedRawIndex);
+  const chunk = parent.children.splice(movedChunkStart, movedRawIndex - movedChunkStart + 1);
 
-  parent.children.splice(rawFromIndex, 1);
-  const targetIndexAfterRemoval = parent.children.indexOf(target);
-  const insertionIndex = movingForward ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval;
-  parent.children.splice(insertionIndex, 0, moved);
+  const targetRawIndex = parent.children.indexOf(target);
+  const movingForward = toIndex > fromIndex;
+  const insertionIndex = movingForward ? targetRawIndex + 1 : chunkStart(parent.children, targetRawIndex);
+
+  parent.children.splice(insertionIndex, 0, ...chunk);
 }

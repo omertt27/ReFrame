@@ -1,0 +1,22 @@
+{
+  "name": "@reframe/dev",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@reframe/core": "workspace:*",
+    "diff": "^7.0.0",
+    "http-proxy": "^1.18.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^6.0.0",
+    "@types/http-proxy": "^1.17.15",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -5,6 +5,30 @@ export type ClsxArg =
   | { kind: "string"; value: string; node: t.StringLiteral }
   | { kind: "conditional"; testSource: string; value: string; node: t.StringLiteral };
 
+/**
+ * The explicit capability boundary: a className expression either matches
+ * one of the recognized shapes below, or comes back as "unsupported" with a
+ * specific, user-facing reason. There is deliberately no fallback path that
+ * guesses at an unrecognized shape — see project memory `reframe-onlook-validation`
+ * for why (this is the exact failure mode found in Onlook's editor).
+ *
+ * Recognized today:
+ *   - a plain string literal
+ *   - `prop === "value" ? "..." : "..."` (a DIRECT prop comparison — not a
+ *     variable derived from one, see "unsupported" reasons below)
+ *   - `clsx(...)` / `cn(...)` whose arguments are each either a string
+ *     literal or `test && "..."`
+ *
+ * Explicitly NOT traced (reported as "unsupported", not guessed):
+ *   - `const isX = prop === "value"; ... isX ? "..." : "..."` — tracing an
+ *     intermediate variable back to a prop comparison is real, common React
+ *     code, and worth building — just not yet. Flagged with its own reason
+ *     string so it's distinguishable from other unsupported shapes.
+ *   - a nested/chained ternary in a branch position
+ *   - an arbitrary function call (`getNavbarClasses(...)`) — only clsx/cn
+ *     are recognized call shapes
+ *   - a template literal
+ */
 export type ClassIR =
   | { kind: "string"; value: string }
   | {
@@ -21,7 +45,8 @@ export type ClassIR =
        * (e.g. an object-map arg, a template literal) — treat as opaque
        * rather than guessing, so we never silently misinterpret intent. */
       args: ClsxArg[] | null;
-    };
+    }
+  | { kind: "unsupported"; reason: string };
 
 /** Best-effort, display-only rendering of a conditional test expression. */
 function stringifyTestExpr(node: t.Expression): string {
@@ -58,48 +83,77 @@ function extractClsxArgs(call: t.CallExpression): ClsxArg[] | null {
   return args;
 }
 
+function unsupported(reason: string): ClassIR {
+  return { kind: "unsupported", reason };
+}
+
+function describeConditionalMismatch(expr: t.ConditionalExpression): ClassIR {
+  const { test, consequent, alternate } = expr;
+
+  if (!t.isBinaryExpression(test) || test.operator !== "===") {
+    return unsupported(
+      `ternary test is "${stringifyTestExpr(test as t.Expression)}", not a direct "prop === \\"value\\"" ` +
+        `comparison — likely a variable derived from one (e.g. "const isX = prop === ...; isX ? ... : ..."), ` +
+        "which isn't traced back to its prop in V0",
+    );
+  }
+  if (!t.isIdentifier(test.left) || !t.isStringLiteral(test.right)) {
+    return unsupported('ternary test must be exactly "identifier === \\"string literal\\""');
+  }
+  if (t.isConditionalExpression(consequent) || t.isConditionalExpression(alternate)) {
+    return unsupported("nested/chained conditional expressions in a ternary branch aren't supported");
+  }
+  return unsupported("ternary branches must both be plain string literals");
+}
+
 export function extractClassIR(attr: t.JSXAttribute): ClassIR | null {
   const value = attr.value;
 
+  if (value === null) return null; // shorthand boolean attribute — not applicable to className
   if (t.isStringLiteral(value)) {
     return { kind: "string", value: value.value };
   }
+  if (!t.isJSXExpressionContainer(value)) return null;
 
-  if (t.isJSXExpressionContainer(value)) {
-    const expr = value.expression;
+  const expr = value.expression;
 
-    if (t.isConditionalExpression(expr)) {
-      const { test, consequent, alternate } = expr;
-      if (
-        t.isBinaryExpression(test) &&
-        test.operator === "===" &&
-        t.isIdentifier(test.left) &&
-        t.isStringLiteral(test.right) &&
-        t.isStringLiteral(consequent) &&
-        t.isStringLiteral(alternate)
-      ) {
-        return {
-          kind: "ternary",
-          propName: test.left.name,
-          testValue: test.right.value,
-          consequent: consequent.value,
-          alternate: alternate.value,
-        };
-      }
-    }
-
+  if (t.isConditionalExpression(expr)) {
+    const { test, consequent, alternate } = expr;
     if (
-      t.isCallExpression(expr) &&
-      t.isIdentifier(expr.callee) &&
-      (expr.callee.name === "clsx" || expr.callee.name === "cn")
+      t.isBinaryExpression(test) &&
+      test.operator === "===" &&
+      t.isIdentifier(test.left) &&
+      t.isStringLiteral(test.right) &&
+      t.isStringLiteral(consequent) &&
+      t.isStringLiteral(alternate)
     ) {
+      return {
+        kind: "ternary",
+        propName: test.left.name,
+        testValue: test.right.value,
+        consequent: consequent.value,
+        alternate: alternate.value,
+      };
+    }
+    return describeConditionalMismatch(expr);
+  }
+
+  if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
+    if (expr.callee.name === "clsx" || expr.callee.name === "cn") {
       return {
         kind: "clsxCall",
         calleeName: expr.callee.name,
         args: extractClsxArgs(expr),
       };
     }
+    return unsupported(
+      `className is a call to "${expr.callee.name}(...)" — only clsx()/cn() are recognized function calls`,
+    );
   }
 
-  return null;
+  if (t.isTemplateLiteral(expr)) {
+    return unsupported("className is a template literal, not supported");
+  }
+
+  return unsupported("unrecognized className expression shape");
 }

@@ -1,0 +1,183 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ReFrame — dev canvas (spike)</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        font-family: system-ui, sans-serif;
+        background: #0b0b0d;
+        color: #f5f5f5;
+      }
+      .layout {
+        display: flex;
+        height: 100%;
+      }
+      iframe {
+        flex: 1;
+        border: 0;
+        background: #fff;
+      }
+      #sidebar {
+        width: 380px;
+        padding: 16px;
+        box-sizing: border-box;
+        overflow: auto;
+        background: #111113;
+        border-left: 1px solid #222;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        background: #17171a;
+        padding: 12px;
+        border-radius: 8px;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #8a8a90;
+        margin: 16px 0 8px;
+      }
+      h2:first-child {
+        margin-top: 0;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        background: #0b0b0d;
+        border: 1px solid #2a2a2e;
+        color: #f5f5f5;
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+      button {
+        width: 100%;
+        border: 0;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 13px;
+        margin-bottom: 8px;
+        cursor: pointer;
+        color: #0b0b0d;
+      }
+      #btn-instance {
+        background: #f4a340;
+      }
+      #btn-shared {
+        background: #f5f5f5;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      label {
+        font-size: 11px;
+        color: #8a8a90;
+        display: block;
+        margin-bottom: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <iframe id="target" src="__PROXY_URL__"></iframe>
+      <div id="sidebar">
+        <h2>Selection</h2>
+        <pre id="out">Click something in the app.</pre>
+
+        <h2>Edit className</h2>
+        <label>Find</label>
+        <input id="find" value="h-16" />
+        <label>Replace with</label>
+        <input id="replace" value="h-20" />
+        <button id="btn-instance" disabled>This instance only</button>
+        <button id="btn-shared" disabled>Shared component</button>
+
+        <h2>Diff</h2>
+        <pre id="diff">(no edit yet)</pre>
+      </div>
+    </div>
+    <script>
+      var current = null; // { component, route }
+
+      var outEl = document.getElementById("out");
+      var diffEl = document.getElementById("diff");
+      var btnInstance = document.getElementById("btn-instance");
+      var btnShared = document.getElementById("btn-shared");
+
+      window.addEventListener("message", function (event) {
+        var data = event.data;
+        if (!data || data.source !== "reframe-preload") return;
+        current = { component: data.component, route: data.route };
+        outEl.textContent = "resolving " + data.component + " @ " + data.route + " ...";
+        btnInstance.disabled = true;
+        btnShared.disabled = true;
+
+        fetch("/__reframe/resolve", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(current),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            outEl.textContent = JSON.stringify(result, null, 2);
+            if (result.ok) {
+              // "instance" needs a resolved usage (props) to know which
+              // branch is "this instance" — unavailable for components
+              // nested inside other components rather than used directly
+              // in a page/layout file (see the "note" field when present).
+              btnInstance.disabled = result.kind !== "usage";
+              btnShared.disabled = false;
+            }
+          })
+          .catch(function (err) {
+            outEl.textContent = "error: " + err;
+          });
+      });
+
+      function mutate(scope) {
+        if (!current) return;
+        diffEl.textContent = "applying " + scope + " edit ...";
+        fetch("/__reframe/mutate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            component: current.component,
+            route: current.route,
+            scope: scope,
+            find: document.getElementById("find").value,
+            replace: document.getElementById("replace").value,
+          }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            diffEl.textContent = result.ok
+              ? result.diff || "(no textual change)"
+              : "error: " + result.error;
+          })
+          .catch(function (err) {
+            diffEl.textContent = "error: " + err;
+          });
+      }
+
+      btnInstance.addEventListener("click", function () {
+        mutate("instance");
+      });
+      btnShared.addEventListener("click", function () {
+        mutate("shared");
+      });
+    </script>
+  </body>
+</html>

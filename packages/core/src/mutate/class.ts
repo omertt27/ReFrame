@@ -18,6 +18,10 @@ export type ClassMutation =
 export function applyClassMutation(target: ClassAttrRef, mutation: ClassMutation): void {
   const { attrNode, ir } = target;
 
+  if (ir.kind === "unsupported") {
+    throw new Error(`className is unsupported, refusing to guess: ${ir.reason}`);
+  }
+
   if (mutation.op === "setBranch") {
     if (ir.kind !== "ternary") {
       throw new Error(`Cannot target a branch: className is not a ternary (kind="${ir.kind}")`);
