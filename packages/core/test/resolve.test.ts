@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { moveChild } from "../src/mutate/move.js";
 import { buildComponentGraph } from "../src/parse.js";
-import { resolveComponentAtRoute, routeLayoutFiles, routeToPageFile } from "../src/resolve.js";
+import { listPageRoutes, pageSectionOrder, resolveDefinitionByFile, resolveComponentAtRoute, routeLayoutFiles, routeToPageFile } from "../src/resolve.js";
+import { printFile } from "../src/write.js";
 
 // Mirrors fixtures/onlook-validation-app's real (nested) shape: a shared
 // Navbar defined under app/components/, used directly in two page files,
@@ -58,6 +60,24 @@ describe("routeToPageFile / routeLayoutFiles", () => {
   });
 });
 
+describe("listPageRoutes", () => {
+  it("finds every page.tsx and derives its route, inverse of routeToPageFile", () => {
+    const graph = buildComponentGraph([
+      { filePath: "app/page.tsx", source: `export default function HomePage() { return <div />; }` },
+      { filePath: "app/pricing/page.tsx", source: `export default function PricingPage() { return <div />; }` },
+      { filePath: "app/about/page.tsx", source: `export default function AboutPage() { return <div />; }` },
+      { filePath: "app/layout.tsx", source: `export default function RootLayout({ children }) { return <html>{children}</html>; }` },
+      { filePath: "app/components/Navbar.tsx", source: `export default function Navbar() { return <header />; }` },
+    ]);
+
+    expect(listPageRoutes(graph)).toEqual([
+      { route: "/", pageComponent: "HomePage" },
+      { route: "/about", pageComponent: "AboutPage" },
+      { route: "/pricing", pageComponent: "PricingPage" },
+    ]);
+  });
+});
+
 describe("resolveComponentAtRoute", () => {
   it("resolves a shared component to the correct route-specific usage", () => {
     const graph = loadNestedFixture();
@@ -79,5 +99,118 @@ describe("resolveComponentAtRoute", () => {
   it("throws when nothing matches the route", () => {
     const graph = loadNestedFixture();
     expect(() => resolveComponentAtRoute(graph, "Navbar", "/about")).toThrow(/No usage or definition/);
+  });
+});
+
+function loadMultiSectionFixture() {
+  const section = (name: string) =>
+    `export default function ${name}() { return <div className="${name.toLowerCase()}">${name}</div>; }`;
+  return buildComponentGraph([
+    { filePath: "app/components/Navbar.tsx", source: section("Navbar") },
+    { filePath: "app/components/Hero.tsx", source: section("Hero") },
+    { filePath: "app/components/Card.tsx", source: section("Card") },
+    { filePath: "app/components/Footer.tsx", source: section("Footer") },
+    {
+      filePath: "app/page.tsx",
+      source: `
+        import Navbar from "./components/Navbar";
+        import Hero from "./components/Hero";
+        import Card from "./components/Card";
+        import Footer from "./components/Footer";
+        export default function HomePage() {
+          return (
+            <>
+              <Navbar />
+              <Hero />
+              <Card />
+              <Footer />
+            </>
+          );
+        }
+      `,
+    },
+  ]);
+}
+
+function sectionIndexByName(sections: { name: string; index: number }[], name: string): number {
+  return sections.find((s) => s.name === name)!.index;
+}
+
+describe("pageSectionOrder", () => {
+  it("lists the page's direct known-component children in order, with moveChild-compatible indices", () => {
+    const graph = loadMultiSectionFixture();
+    expect(pageSectionOrder(graph, "/")).toEqual([
+      { name: "Navbar", index: 0 },
+      { name: "Hero", index: 1 },
+      { name: "Card", index: 2 },
+      { name: "Footer", index: 3 },
+    ]);
+  });
+
+  it("returns null for a route whose page can't be found", () => {
+    const graph = loadMultiSectionFixture();
+    expect(pageSectionOrder(graph, "/nowhere")).toBeNull();
+  });
+
+  it("feeds directly into moveChild for a drag-drop reorder, indices matching exactly", () => {
+    const graph = loadMultiSectionFixture();
+    const order = pageSectionOrder(graph, "/")!;
+    const pageDef = resolveDefinitionByFile(graph, "app/page.tsx")!;
+
+    // Drag Card to before Hero — same as a user dropping it there in the canvas.
+    moveChild(pageDef.rootElement, sectionIndexByName(order, "Card"), sectionIndexByName(order, "Hero"));
+
+    const after = printFile(graph, "app/page.tsx");
+    const positions = ["Navbar", "Card", "Hero", "Footer"].map((name) => after.indexOf(`<${name}`));
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+
+    // pageSectionOrder reads the live (mutated) AST, so it reflects the new order too.
+    expect(pageSectionOrder(graph, "/")!.map((s) => s.name)).toEqual(["Navbar", "Card", "Hero", "Footer"]);
+  });
+
+  it("computes real indices correctly when a non-component element sits between sections — regression for the exact live bug found via the drag e2e test", () => {
+    const graph = buildComponentGraph([
+      { filePath: "app/components/Navbar.tsx", source: `export default function Navbar() { return <header>x</header>; }` },
+      { filePath: "app/components/Hero.tsx", source: `export default function Hero() { return <section>x</section>; }` },
+      { filePath: "app/components/Footer.tsx", source: `export default function Footer() { return <footer>x</footer>; }` },
+      {
+        filePath: "app/page.tsx",
+        source: `
+          import Navbar from "./components/Navbar";
+          import Hero from "./components/Hero";
+          import Footer from "./components/Footer";
+          export default function HomePage() {
+            return (
+              <>
+                <Navbar />
+                <Hero />
+                <section className="cards">not a known component — a raw wrapper</section>
+                <Footer />
+              </>
+            );
+          }
+        `,
+      },
+    ]);
+
+    const order = pageSectionOrder(graph, "/")!;
+    // Footer's REAL index must be 3 (Navbar=0, Hero=1, the raw <section>=2,
+    // Footer=3) — NOT 2, which is what a naively-filtered "sections only"
+    // index would wrongly compute, and would move the raw <section> instead
+    // of Footer when passed to moveChild.
+    expect(order).toEqual([
+      { name: "Navbar", index: 0 },
+      { name: "Hero", index: 1 },
+      { name: "Footer", index: 3 },
+    ]);
+
+    const pageDef = resolveDefinitionByFile(graph, "app/page.tsx")!;
+    moveChild(pageDef.rootElement, sectionIndexByName(order, "Footer"), sectionIndexByName(order, "Navbar"));
+
+    const after = printFile(graph, "app/page.tsx");
+    // Footer must have actually moved — not the raw <section> wrapper.
+    expect(after.indexOf("<Footer")).toBeLessThan(after.indexOf("<Navbar"));
+    expect(after.indexOf("<Navbar")).toBeLessThan(after.indexOf("<Hero"));
+    expect(after).toContain('className="cards"'); // the raw wrapper is untouched, still present
   });
 });

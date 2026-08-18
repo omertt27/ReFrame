@@ -7,4 +7,6 @@ export * from "./mutate/class.js";
 export * from "./mutate/prop.js";
 export * from "./mutate/move.js";
 export * from "./mutate/tailwind.js";
+export * from "./tailwind-scale.js";
+export * from "./properties.js";
 export * from "./write.js";

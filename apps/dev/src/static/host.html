@@ -2,8 +2,11 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>ReFrame — dev canvas (spike)</title>
+    <title>ReFrame</title>
     <style>
+      * {
+        box-sizing: border-box;
+      }
       html,
       body {
         margin: 0;
@@ -12,142 +15,322 @@
         background: #0b0b0d;
         color: #f5f5f5;
       }
-      .layout {
+      .app {
         display: flex;
+        flex-direction: column;
         height: 100%;
+      }
+      header {
+        height: 44px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        border-bottom: 1px solid #222;
+        background: #111113;
+      }
+      .layout {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      #components {
+        width: 220px;
+        flex: none;
+        overflow: auto;
+        background: #111113;
+        border-right: 1px solid #222;
+        padding: 12px;
+      }
+      #canvas {
+        flex: 1;
+        min-width: 0;
+        display: flex;
       }
       iframe {
         flex: 1;
         border: 0;
         background: #fff;
       }
-      #sidebar {
-        width: 380px;
-        padding: 16px;
-        box-sizing: border-box;
+      #properties {
+        width: 320px;
+        flex: none;
         overflow: auto;
         background: #111113;
         border-left: 1px solid #222;
-      }
-      pre {
-        white-space: pre-wrap;
-        word-break: break-word;
-        font-size: 12px;
-        background: #17171a;
-        padding: 12px;
-        border-radius: 8px;
+        padding: 16px;
       }
       h2 {
-        font-size: 13px;
+        font-size: 11px;
         text-transform: uppercase;
         letter-spacing: 0.08em;
         color: #8a8a90;
-        margin: 16px 0 8px;
+        margin: 0 0 10px;
       }
-      h2:first-child {
-        margin-top: 0;
+      .component-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 6px 8px;
+        border-radius: 6px;
+        font-size: 13px;
       }
-      input {
+      .component-row .count {
+        color: #6b6b70;
+        font-size: 11px;
+      }
+      .empty {
+        color: #6b6b70;
+        font-size: 13px;
+        padding: 8px;
+      }
+      .selection-title {
+        font-size: 16px;
+        font-weight: 600;
+        margin-bottom: 2px;
+      }
+      .selection-meta {
+        font-size: 12px;
+        color: #8a8a90;
+        margin-bottom: 16px;
+      }
+      .scope {
+        margin-bottom: 20px;
+        border: 1px solid #222;
+        border-radius: 8px;
+        padding: 10px;
+      }
+      .scope label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        padding: 4px 0;
+        cursor: pointer;
+      }
+      .scope label.disabled {
+        color: #55555a;
+        cursor: default;
+      }
+      .field {
+        margin-bottom: 14px;
+      }
+      .field label {
+        display: block;
+        font-size: 12px;
+        color: #8a8a90;
+        margin-bottom: 4px;
+      }
+      .field input {
         width: 100%;
-        box-sizing: border-box;
         background: #0b0b0d;
         border: 1px solid #2a2a2e;
         color: #f5f5f5;
         border-radius: 6px;
-        padding: 6px 8px;
-        font-size: 13px;
-        margin-bottom: 8px;
-      }
-      button {
-        width: 100%;
-        border: 0;
-        border-radius: 6px;
         padding: 8px;
         font-size: 13px;
-        margin-bottom: 8px;
-        cursor: pointer;
-        color: #0b0b0d;
       }
-      #btn-instance {
-        background: #f4a340;
+      .field input:disabled {
+        opacity: 0.35;
       }
-      #btn-shared {
-        background: #f5f5f5;
-      }
-      button:disabled {
-        opacity: 0.4;
-        cursor: default;
-      }
-      label {
+      .field .unavailable {
         font-size: 11px;
-        color: #8a8a90;
-        display: block;
-        margin-bottom: 2px;
+        color: #6b6b70;
+        margin-top: 4px;
+      }
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 11px;
+        background: #17171a;
+        padding: 10px;
+        border-radius: 8px;
+        margin: 0;
       }
     </style>
   </head>
   <body>
-    <div class="layout">
-      <iframe id="target" src="__PROXY_URL__"></iframe>
-      <div id="sidebar">
-        <h2>Selection</h2>
-        <pre id="out">Click something in the app.</pre>
-
-        <h2>Edit className</h2>
-        <label>Find</label>
-        <input id="find" value="h-16" />
-        <label>Replace with</label>
-        <input id="replace" value="h-20" />
-        <button id="btn-instance" disabled>This instance only</button>
-        <button id="btn-shared" disabled>Shared component</button>
-
-        <h2>Diff</h2>
-        <pre id="diff">(no edit yet)</pre>
+    <div class="app">
+      <header>ReFrame</header>
+      <div class="layout">
+        <div id="components">
+          <h2>Components</h2>
+          <div id="component-list"></div>
+        </div>
+        <div id="canvas">
+          <iframe id="target" src="__PROXY_URL__"></iframe>
+        </div>
+        <div id="properties">
+          <h2>Properties</h2>
+          <div id="properties-body">
+            <div class="empty">Click something in the canvas.</div>
+          </div>
+          <h2 style="margin-top: 24px">Diff</h2>
+          <pre id="diff">(no edit yet)</pre>
+        </div>
       </div>
     </div>
-    <script>
-      var current = null; // { component, route }
 
-      var outEl = document.getElementById("out");
-      var diffEl = document.getElementById("diff");
-      var btnInstance = document.getElementById("btn-instance");
-      var btnShared = document.getElementById("btn-shared");
+    <script>
+      var current = null; // { component, route, usageCount, kind, availableInstance }
+      var scope = "all";
+
+      fetch("/__reframe/components")
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (list) {
+          var el = document.getElementById("component-list");
+          el.innerHTML = list
+            .map(function (c) {
+              return (
+                '<div class="component-row"><span>' +
+                c.name +
+                '</span><span class="count">' +
+                c.usageCount +
+                "×</span></div>"
+              );
+            })
+            .join("");
+        });
+
+      function propertyField(key, label, prop) {
+        var disabled = !prop || !prop.available;
+        var value = prop && prop.available && prop.px !== null ? prop.px : "";
+        var note = !prop || prop.available ? "" : '<div class="unavailable">' + prop.reason + "</div>";
+        return (
+          '<div class="field">' +
+          "<label>" +
+          label +
+          "</label>" +
+          '<input type="number" data-property="' +
+          key +
+          '" value="' +
+          value +
+          '" placeholder="—" ' +
+          (disabled ? "disabled" : "") +
+          " />" +
+          note +
+          "</div>"
+        );
+      }
+
+      function renderProperties(result) {
+        var body = document.getElementById("properties-body");
+        if (!result.ok) {
+          body.innerHTML = '<div class="empty">' + result.error + "</div>";
+          return;
+        }
+
+        current = {
+          component: result.component,
+          route: result.route,
+          usageCount: result.usageCount,
+          availableInstance: result.kind === "usage",
+        };
+        scope = "all";
+
+        var plural = result.usageCount === 1 ? "page" : "pages";
+        var scopeDisabledAttr = current.availableInstance ? "" : "disabled";
+        var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + result.note + "</div>" : "";
+
+        var propsHtml = "(no editable properties here)";
+        if (result.properties && result.properties.editable) {
+          propsHtml = Object.keys(result.properties.values)
+            .map(function (key) {
+              var labels = { height: "Height", padding: "Padding" };
+              return propertyField(key, labels[key] || key, result.properties.values[key]);
+            })
+            .join("");
+        } else if (result.properties) {
+          propsHtml = '<div class="unavailable">' + result.properties.reason + "</div>";
+        }
+
+        body.innerHTML =
+          '<div class="selection-title">' +
+          result.component +
+          "</div>" +
+          '<div class="selection-meta">Used on ' +
+          result.usageCount +
+          " " +
+          plural +
+          "</div>" +
+          noteHtml +
+          '<div class="scope">' +
+          '<label class="' +
+          "" +
+          '"><input type="radio" name="scope" value="all" checked /> All instances</label>' +
+          '<label class="' +
+          (current.availableInstance ? "" : "disabled") +
+          '"><input type="radio" name="scope" value="instance" ' +
+          scopeDisabledAttr +
+          " /> This instance</label>" +
+          "</div>" +
+          propsHtml;
+
+        Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (el) {
+          el.addEventListener("change", function () {
+            scope = el.value;
+          });
+        });
+        Array.prototype.forEach.call(document.querySelectorAll("input[data-property]"), function (el) {
+          el.addEventListener("change", function () {
+            mutate(el.getAttribute("data-property"), Number(el.value));
+          });
+        });
+      }
 
       window.addEventListener("message", function (event) {
         var data = event.data;
         if (!data || data.source !== "reframe-preload") return;
-        current = { component: data.component, route: data.route };
-        outEl.textContent = "resolving " + data.component + " @ " + data.route + " ...";
-        btnInstance.disabled = true;
-        btnShared.disabled = true;
+
+        if (data.type === "reorder") {
+          var diffEl = document.getElementById("diff");
+          diffEl.textContent = "reordering (" + data.fromIndex + " -> " + data.toIndex + ") ...";
+          fetch("/__reframe/reorder", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ route: data.route, fromIndex: data.fromIndex, toIndex: data.toIndex }),
+          })
+            .then(function (r) {
+              return r.json();
+            })
+            .then(function (result) {
+              diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            })
+            .catch(function (err) {
+              diffEl.textContent = "error: " + err;
+            });
+          return;
+        }
+
+        if (data.type !== "select") return;
+        var body = document.getElementById("properties-body");
+        body.innerHTML = '<div class="empty">resolving ' + data.component + " ...</div>";
 
         fetch("/__reframe/resolve", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(current),
+          body: JSON.stringify({ component: data.component, route: data.route }),
         })
           .then(function (r) {
             return r.json();
           })
           .then(function (result) {
-            outEl.textContent = JSON.stringify(result, null, 2);
-            if (result.ok) {
-              // "instance" needs a resolved usage (props) to know which
-              // branch is "this instance" — unavailable for components
-              // nested inside other components rather than used directly
-              // in a page/layout file (see the "note" field when present).
-              btnInstance.disabled = result.kind !== "usage";
-              btnShared.disabled = false;
-            }
+            result.component = data.component;
+            result.route = data.route;
+            renderProperties(result);
           })
           .catch(function (err) {
-            outEl.textContent = "error: " + err;
+            body.innerHTML = '<div class="empty">error: ' + err + "</div>";
           });
       });
 
-      function mutate(scope) {
-        if (!current) return;
-        diffEl.textContent = "applying " + scope + " edit ...";
+      function mutate(property, px) {
+        if (!current || Number.isNaN(px)) return;
+        var diffEl = document.getElementById("diff");
+        diffEl.textContent = "applying " + property + " = " + px + "px (" + scope + ") ...";
         fetch("/__reframe/mutate", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -155,29 +338,20 @@
             component: current.component,
             route: current.route,
             scope: scope,
-            find: document.getElementById("find").value,
-            replace: document.getElementById("replace").value,
+            property: property,
+            px: px,
           }),
         })
           .then(function (r) {
             return r.json();
           })
           .then(function (result) {
-            diffEl.textContent = result.ok
-              ? result.diff || "(no textual change)"
-              : "error: " + result.error;
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
           })
           .catch(function (err) {
             diffEl.textContent = "error: " + err;
           });
       }
-
-      btnInstance.addEventListener("click", function () {
-        mutate("instance");
-      });
-      btnShared.addEventListener("click", function () {
-        mutate("shared");
-      });
     </script>
   </body>
 </html>

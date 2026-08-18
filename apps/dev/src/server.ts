@@ -33,5 +33,5 @@ const graph = buildComponentGraph(files);
 const originalSources = new Map(files.map((f) => [f.filePath, f.source]));
 console.log(`[reframe] parsed ${files.length} files, ${graph.definitions.size} components`);
 
-startProxyServer(targetPort, proxyPort, [...graph.definitions.keys()]);
+startProxyServer(targetPort, proxyPort, graph);
 startHostServer(hostPort, proxyPort, targetDir, graph, originalSources);

@@ -5,6 +5,10 @@ import { fileURLToPath } from "node:url";
 
 import httpProxy from "http-proxy";
 
+import { pageSectionOrder } from "@reframe/core";
+
+import type { AppState } from "./state.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRELOAD_PATH = "/__reframe/preload.js";
 const preloadScript = readFileSync(join(__dirname, "static/preload.js"), "utf8");
@@ -27,7 +31,7 @@ const preloadScript = readFileSync(join(__dirname, "static/preload.js"), "utf8")
  * target's response closes). Acceptable for this read-only spike; a
  * streaming scan for </body> across chunk boundaries would fix it properly.
  */
-export function startProxyServer(targetPort: number, proxyPort: number, componentNames: string[]): void {
+export function startProxyServer(targetPort: number, proxyPort: number, state: AppState): void {
   const target = `http://localhost:${targetPort}`;
   const proxy = httpProxy.createProxyServer({ target, selfHandleResponse: true });
 
@@ -81,7 +85,13 @@ export function startProxyServer(targetPort: number, proxyPort: number, componen
     // for this resolves against this server, not the host's.
     if (req.url === "/__reframe/components") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(componentNames));
+      res.end(JSON.stringify([...state.graph.definitions.keys()]));
+      return;
+    }
+    if (req.url?.startsWith("/__reframe/sections")) {
+      const route = new URL(req.url, "http://x").searchParams.get("route") ?? "/";
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(pageSectionOrder(state.graph, route) ?? []));
       return;
     }
     proxy.web(req, res, { target });
