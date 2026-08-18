@@ -76,6 +76,49 @@ describe("listPageRoutes", () => {
       { route: "/pricing", pageComponent: "PricingPage" },
     ]);
   });
+
+  it("ignores local helper components co-located in the same page file — regression for a real bug found against PrivaPDF's /tools page", () => {
+    // Real code often defines small subcomponents directly in a page file
+    // instead of splitting them out (e.g. src/app/tools/page.tsx defining
+    // MergePanel, SplitPanel, CompressPanel, ... alongside the actual page).
+    // Without tracking the default export specifically, every one of those
+    // helpers looked like its own separate "page" at the same route.
+    const graph = buildComponentGraph([
+      {
+        filePath: "app/tools/page.tsx",
+        source: `
+          function MergePanel() { return <div>merge</div>; }
+          function SplitPanel() { return <div>split</div>; }
+          export default function ToolsPage() {
+            return <div><MergePanel /><SplitPanel /></div>;
+          }
+        `,
+      },
+    ]);
+
+    expect(listPageRoutes(graph)).toEqual([{ route: "/tools", pageComponent: "ToolsPage" }]);
+  });
+});
+
+describe("resolveDefinitionByFile with co-located helpers", () => {
+  it("resolves to the default export, not whichever helper happens to be defined first", () => {
+    const graph = buildComponentGraph([
+      {
+        filePath: "app/dashboard/page.tsx",
+        source: `
+          function StatBar() { return <div>stats</div>; }
+          function LicenseCard() { return <div>license</div>; }
+          export default function DashboardPage() {
+            return <div><StatBar /><LicenseCard /></div>;
+          }
+        `,
+      },
+    ]);
+
+    const def = resolveDefinitionByFile(graph, "app/dashboard/page.tsx");
+    expect(def?.name).toBe("DashboardPage");
+    expect(def?.isDefaultExport).toBe(true);
+  });
 });
 
 describe("resolveComponentAtRoute", () => {

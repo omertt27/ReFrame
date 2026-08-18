@@ -25,18 +25,36 @@
         flex: none;
         display: flex;
         align-items: center;
+        justify-content: space-between;
         padding: 0 16px;
         font-weight: 600;
         letter-spacing: -0.01em;
         border-bottom: 1px solid #222;
         background: #111113;
       }
+      .undo-controls {
+        display: flex;
+        gap: 6px;
+      }
+      .undo-controls button {
+        background: #1c1c1f;
+        color: #d0d0d3;
+        border: 1px solid #2a2a2e;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .undo-controls button:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
       .layout {
         flex: 1;
         display: flex;
         min-height: 0;
       }
-      #components {
+      #tree {
         width: 220px;
         flex: none;
         overflow: auto;
@@ -69,16 +87,29 @@
         color: #8a8a90;
         margin: 0 0 10px;
       }
-      .component-row {
-        display: flex;
-        justify-content: space-between;
-        padding: 6px 8px;
+      .page-group {
+        margin-bottom: 14px;
+      }
+      .page-label {
+        font-size: 13px;
+        font-weight: 600;
+        padding: 4px 6px;
+        color: #d0d0d3;
+      }
+      .section-row {
+        padding: 5px 6px 5px 20px;
         border-radius: 6px;
         font-size: 13px;
+        cursor: pointer;
+        color: #b0b0b4;
       }
-      .component-row .count {
-        color: #6b6b70;
-        font-size: 11px;
+      .section-row:hover {
+        background: #1a1a1d;
+        color: #f5f5f5;
+      }
+      .section-row.active {
+        background: rgba(244, 163, 64, 0.12);
+        color: #f4a340;
       }
       .empty {
         color: #6b6b70;
@@ -148,15 +179,42 @@
         border-radius: 8px;
         margin: 0;
       }
+      .change-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .change-row:hover {
+        background: #1a1a1d;
+      }
+      .change-row .desc {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .change-row .file {
+        color: #6b6b70;
+        font-size: 10px;
+      }
     </style>
   </head>
   <body>
     <div class="app">
-      <header>ReFrame</header>
+      <header>
+        <span>ReFrame</span>
+        <div class="undo-controls">
+          <button id="btn-undo" disabled title="Cmd/Ctrl+Z">Undo</button>
+          <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">Redo</button>
+        </div>
+      </header>
       <div class="layout">
-        <div id="components">
-          <h2>Components</h2>
-          <div id="component-list"></div>
+        <div id="tree">
+          <h2>Pages</h2>
+          <div id="tree-body"></div>
         </div>
         <div id="canvas">
           <iframe id="target" src="__PROXY_URL__"></iframe>
@@ -164,10 +222,14 @@
         <div id="properties">
           <h2>Properties</h2>
           <div id="properties-body">
-            <div class="empty">Click something in the canvas.</div>
+            <div class="empty">Click something in the canvas, or select it from Pages.</div>
           </div>
-          <h2 style="margin-top: 24px">Diff</h2>
+          <h2 style="margin-top: 24px">Last diff</h2>
           <pre id="diff">(no edit yet)</pre>
+          <h2 style="margin-top: 24px">Changes</h2>
+          <div id="changes-body">
+            <div class="empty">No edits yet.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -176,36 +238,97 @@
       var current = null; // { component, route, usageCount, kind, availableInstance }
       var scope = "all";
 
-      fetch("/__reframe/components")
-        .then(function (r) {
-          return r.json();
-        })
-        .then(function (list) {
-          var el = document.getElementById("component-list");
-          el.innerHTML = list
-            .map(function (c) {
-              return (
-                '<div class="component-row"><span>' +
-                c.name +
-                '</span><span class="count">' +
-                c.usageCount +
-                "×</span></div>"
-              );
-            })
-            .join("");
+      function loadTree() {
+        fetch("/__reframe/tree")
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (pages) {
+            var body = document.getElementById("tree-body");
+            body.innerHTML = pages
+              .map(function (p) {
+                var sections = p.sections
+                  .map(function (name) {
+                    return (
+                      '<div class="section-row" data-route="' +
+                      p.route +
+                      '" data-component="' +
+                      name +
+                      '">' +
+                      name +
+                      "</div>"
+                    );
+                  })
+                  .join("");
+                return '<div class="page-group"><div class="page-label">' + p.label + "</div>" + sections + "</div>";
+              })
+              .join("");
+
+            Array.prototype.forEach.call(body.querySelectorAll(".section-row"), function (el) {
+              el.addEventListener("click", function () {
+                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"));
+              });
+            });
+          });
+      }
+
+      function selectFromTree(route, component) {
+        var iframe = document.getElementById("target");
+        Array.prototype.forEach.call(document.querySelectorAll(".section-row"), function (el) {
+          el.classList.toggle("active", el.getAttribute("data-route") === route && el.getAttribute("data-component") === component);
         });
+
+        var proxyOrigin = new URL(iframe.src).origin;
+        var currentPath = new URL(iframe.src).pathname;
+        if (currentPath === route) {
+          resolveSelection(component, route);
+        } else {
+          iframe.src = proxyOrigin + route;
+          setTimeout(function () {
+            resolveSelection(component, route);
+          }, 900);
+        }
+      }
+
+      function resolveSelection(component, route) {
+        var body = document.getElementById("properties-body");
+        body.innerHTML = '<div class="empty">resolving ' + component + " ...</div>";
+        fetch("/__reframe/resolve", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ component: component, route: route }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            result.component = component;
+            result.route = route;
+            renderProperties(result);
+          })
+          .catch(function (err) {
+            body.innerHTML = '<div class="empty">error: ' + err + "</div>";
+          });
+      }
 
       function propertyField(key, label, prop) {
         var disabled = !prop || !prop.available;
         var value = prop && prop.available && prop.px !== null ? prop.px : "";
         var note = !prop || prop.available ? "" : '<div class="unavailable">' + prop.reason + "</div>";
+        // Backend is shown next to the label — transparency about which
+        // representation (Tailwind vs inline style) an edit will land in,
+        // never silently rewritten from what the author already chose.
+        var backendLabel = prop && prop.backend ? " · " + prop.backend : "";
         return (
           '<div class="field">' +
           "<label>" +
           label +
+          backendLabel +
           "</label>" +
           '<input type="number" data-property="' +
           key +
+          '" data-backend="' +
+          (prop && prop.backend ? prop.backend : "") +
           '" value="' +
           value +
           '" placeholder="—" ' +
@@ -231,7 +354,12 @@
         };
         scope = "all";
 
-        var plural = result.usageCount === 1 ? "page" : "pages";
+        var shared = result.usageCount > 1;
+        var metaText = shared
+          ? "Shared component · " + result.usageCount + " usages"
+          : result.usageCount === 1
+            ? "1 usage"
+            : "Page component";
         var scopeDisabledAttr = current.availableInstance ? "" : "disabled";
         var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + result.note + "</div>" : "";
 
@@ -239,7 +367,7 @@
         if (result.properties && result.properties.editable) {
           propsHtml = Object.keys(result.properties.values)
             .map(function (key) {
-              var labels = { height: "Height", padding: "Padding" };
+              var labels = { height: "Height", width: "Width", padding: "Padding" };
               return propertyField(key, labels[key] || key, result.properties.values[key]);
             })
             .join("");
@@ -251,16 +379,12 @@
           '<div class="selection-title">' +
           result.component +
           "</div>" +
-          '<div class="selection-meta">Used on ' +
-          result.usageCount +
-          " " +
-          plural +
+          '<div class="selection-meta">' +
+          metaText +
           "</div>" +
           noteHtml +
           '<div class="scope">' +
-          '<label class="' +
-          "" +
-          '"><input type="radio" name="scope" value="all" checked /> All instances</label>' +
+          '<label><input type="radio" name="scope" value="all" checked /> All instances</label>' +
           '<label class="' +
           (current.availableInstance ? "" : "disabled") +
           '"><input type="radio" name="scope" value="instance" ' +
@@ -276,7 +400,7 @@
         });
         Array.prototype.forEach.call(document.querySelectorAll("input[data-property]"), function (el) {
           el.addEventListener("change", function () {
-            mutate(el.getAttribute("data-property"), Number(el.value));
+            mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
           });
         });
       }
@@ -287,17 +411,24 @@
 
         if (data.type === "reorder") {
           var diffEl = document.getElementById("diff");
-          diffEl.textContent = "reordering (" + data.fromIndex + " -> " + data.toIndex + ") ...";
+          diffEl.textContent = "reordering (" + data.fromName + " -> " + data.toName + ") ...";
           fetch("/__reframe/reorder", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ route: data.route, fromIndex: data.fromIndex, toIndex: data.toIndex }),
+            body: JSON.stringify({
+              route: data.route,
+              fromIndex: data.fromIndex,
+              toIndex: data.toIndex,
+              fromName: data.fromName,
+              toName: data.toName,
+            }),
           })
             .then(function (r) {
               return r.json();
             })
             .then(function (result) {
               diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+              if (result.ok) refreshHistory();
             })
             .catch(function (err) {
               diffEl.textContent = "error: " + err;
@@ -306,31 +437,13 @@
         }
 
         if (data.type !== "select") return;
-        var body = document.getElementById("properties-body");
-        body.innerHTML = '<div class="empty">resolving ' + data.component + " ...</div>";
-
-        fetch("/__reframe/resolve", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ component: data.component, route: data.route }),
-        })
-          .then(function (r) {
-            return r.json();
-          })
-          .then(function (result) {
-            result.component = data.component;
-            result.route = data.route;
-            renderProperties(result);
-          })
-          .catch(function (err) {
-            body.innerHTML = '<div class="empty">error: ' + err + "</div>";
-          });
+        resolveSelection(data.component, data.route);
       });
 
-      function mutate(property, px) {
+      function mutate(property, px, backend) {
         if (!current || Number.isNaN(px)) return;
         var diffEl = document.getElementById("diff");
-        diffEl.textContent = "applying " + property + " = " + px + "px (" + scope + ") ...";
+        diffEl.textContent = "applying " + property + " = " + px + "px (" + scope + ", " + backend + ") ...";
         fetch("/__reframe/mutate", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -340,6 +453,7 @@
             scope: scope,
             property: property,
             px: px,
+            backend: backend,
           }),
         })
           .then(function (r) {
@@ -347,11 +461,71 @@
           })
           .then(function (result) {
             diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            if (result.ok) refreshHistory();
           })
           .catch(function (err) {
             diffEl.textContent = "error: " + err;
           });
       }
+
+      function refreshHistory() {
+        fetch("/__reframe/history")
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (data) {
+            document.getElementById("btn-undo").disabled = data.history.length === 0;
+            document.getElementById("btn-redo").disabled = !data.canRedo;
+
+            var body = document.getElementById("changes-body");
+            if (data.history.length === 0) {
+              body.innerHTML = '<div class="empty">No edits yet.</div>';
+              return;
+            }
+            body.innerHTML = data.history
+              .slice()
+              .reverse()
+              .map(function (h) {
+                return (
+                  '<div class="change-row"><div><div class="desc">' +
+                  h.description +
+                  '</div><div class="file">' +
+                  h.filePath +
+                  "</div></div></div>"
+                );
+              })
+              .join("");
+          });
+      }
+
+      function undoOrRedo(kind) {
+        fetch("/__reframe/" + kind, { method: "POST" })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            var diffEl = document.getElementById("diff");
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            refreshHistory();
+            if (result.ok && current) resolveSelection(current.component, current.route);
+          });
+      }
+
+      document.getElementById("btn-undo").addEventListener("click", function () {
+        undoOrRedo("undo");
+      });
+      document.getElementById("btn-redo").addEventListener("click", function () {
+        undoOrRedo("redo");
+      });
+      window.addEventListener("keydown", function (event) {
+        var mod = event.metaKey || event.ctrlKey;
+        if (!mod || event.key.toLowerCase() !== "z") return;
+        event.preventDefault();
+        undoOrRedo(event.shiftKey ? "redo" : "undo");
+      });
+
+      loadTree();
+      refreshHistory();
     </script>
   </body>
 </html>

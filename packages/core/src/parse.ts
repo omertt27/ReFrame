@@ -10,6 +10,7 @@ const traverse = ((babelTraverseModule as unknown as { default?: typeof babelTra
 
 import { extractClassIR } from "./class-ir.js";
 import type { ComponentDef, ComponentGraph, ParsedFile, UsageSite } from "./graph.js";
+import { extractStyleIR } from "./style-ir.js";
 
 /**
  * A parser adapter recast uses internally so it can track original
@@ -41,14 +42,27 @@ function findReturnedJsx(body: t.BlockStatement): t.JSXElement | t.JSXFragment |
   return null;
 }
 
-function extractClassAttr(root: t.JSXElement | t.JSXFragment) {
-  if (!t.isJSXElement(root)) return null; // fragments can't carry a className
-  const attr = root.openingElement.attributes.find(
-    (a): a is t.JSXAttribute =>
-      t.isJSXAttribute(a) && t.isJSXIdentifier(a.name) && a.name.name === "className",
+function findAttr(root: t.JSXElement | t.JSXFragment, attrName: string): t.JSXAttribute | null {
+  if (!t.isJSXElement(root)) return null; // fragments can't carry attributes
+  return (
+    root.openingElement.attributes.find(
+      (a): a is t.JSXAttribute => t.isJSXAttribute(a) && t.isJSXIdentifier(a.name) && a.name.name === attrName,
+    ) ?? null
   );
+}
+
+function extractClassAttr(root: t.JSXElement | t.JSXFragment) {
+  const attr = findAttr(root, "className");
   if (!attr) return null;
   const ir = extractClassIR(attr);
+  if (!ir) return null;
+  return { attrNode: attr, ir };
+}
+
+function extractStyleAttr(root: t.JSXElement | t.JSXFragment) {
+  const attr = findAttr(root, "style");
+  if (!attr) return null;
+  const ir = extractStyleIR(attr);
   if (!ir) return null;
   return { attrNode: attr, ir };
 }
@@ -60,6 +74,24 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
 
   for (const { filePath, source } of files) {
     parsedFiles.set(filePath, { ast: parseFile(source), source });
+  }
+
+  // Pass 0: which function each file's `export default` points to — real
+  // page/layout files often also define local helper components in the
+  // same file, and those aren't "the page" even though they're also a
+  // capitalized top-level function returning JSX.
+  const defaultExportByFile = new Map<string, string>();
+  for (const [filePath, { ast }] of parsedFiles) {
+    traverse(ast, {
+      ExportDefaultDeclaration(path) {
+        const decl = path.node.declaration;
+        if (t.isFunctionDeclaration(decl) && decl.id) {
+          defaultExportByFile.set(filePath, decl.id.name);
+        } else if (t.isIdentifier(decl)) {
+          defaultExportByFile.set(filePath, decl.name);
+        }
+      },
+    });
   }
 
   // Pass 1: component definitions — top-level function declarations whose
@@ -76,6 +108,8 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
           filePath,
           rootElement,
           classAttr: extractClassAttr(rootElement),
+          styleAttr: extractStyleAttr(rootElement),
+          isDefaultExport: defaultExportByFile.get(filePath) === name,
         });
       },
     });

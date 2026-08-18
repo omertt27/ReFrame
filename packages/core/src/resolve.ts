@@ -92,11 +92,18 @@ export function resolveComponentAtRoute(
   throw new Error(`No usage or definition of "${component}" found for route "${route}"`);
 }
 
+/** Prefers the file's default export when multiple components are defined
+ * in the same file (a page/layout with co-located local helpers) — falls
+ * back to the first match only if no default export was found at all
+ * (defensive; shouldn't happen for a well-formed page/layout file). */
 export function resolveDefinitionByFile(graph: ComponentGraph, filePath: string): ComponentDef | null {
+  let fallback: ComponentDef | null = null;
   for (const def of graph.definitions.values()) {
-    if (def.filePath === filePath) return def;
+    if (def.filePath !== filePath) continue;
+    if (def.isDefaultExport) return def;
+    fallback ??= def;
   }
-  return null;
+  return fallback;
 }
 
 const PAGE_FILE_RE = /^app\/(.*\/)?page\.tsx$/;
@@ -111,6 +118,7 @@ export interface PageRoute {
 export function listPageRoutes(graph: ComponentGraph): PageRoute[] {
   const routes: PageRoute[] = [];
   for (const def of graph.definitions.values()) {
+    if (!def.isDefaultExport) continue; // skip local helpers co-located in the same file
     const match = PAGE_FILE_RE.exec(def.filePath);
     if (!match) continue;
     const segment = match[1] ? match[1].slice(0, -1) : "";

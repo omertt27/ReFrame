@@ -3,6 +3,7 @@
   var SECTIONS = []; // ordered top-level section names for the current route
   var sectionEls = []; // parallel array of DOM elements, same order as SECTIONS
   var draggedIndex = -1;
+  var draggedName = null;
 
   var style = document.createElement("style");
   style.textContent =
@@ -124,6 +125,7 @@
 
       el.addEventListener("dragstart", function (event) {
         draggedIndex = realIndex;
+        draggedName = SECTIONS[i].name;
         el.classList.add("reframe-dragging");
         if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
       });
@@ -151,6 +153,8 @@
             route: window.location.pathname,
             fromIndex: draggedIndex,
             toIndex: realIndex,
+            fromName: draggedName,
+            toName: SECTIONS[i].name,
           },
           "*",
         );

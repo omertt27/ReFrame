@@ -2,6 +2,7 @@ import { buildComponentGraph, loadProjectFiles } from "@reframe/core";
 
 import { startHostServer } from "./host.js";
 import { startProxyServer } from "./proxy.js";
+import type { AppState } from "./state.js";
 
 function flag(name: string, fallback: number): number {
   const arg = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -28,10 +29,10 @@ function parseArgs() {
 const { targetDir, targetPort, proxyPort, hostPort } = parseArgs();
 
 console.log(`[reframe] parsing ${targetDir} ...`);
-const files = loadProjectFiles(targetDir);
-const graph = buildComponentGraph(files);
-const originalSources = new Map(files.map((f) => [f.filePath, f.source]));
-console.log(`[reframe] parsed ${files.length} files, ${graph.definitions.size} components`);
+const graph = buildComponentGraph(loadProjectFiles(targetDir));
+console.log(`[reframe] parsed ${graph.files.size} files, ${graph.definitions.size} components`);
 
-startProxyServer(targetPort, proxyPort, graph);
-startHostServer(hostPort, proxyPort, targetDir, graph, originalSources);
+const state: AppState = { graph, targetDir, history: [], redoStack: [], nextId: 1 };
+
+startProxyServer(targetPort, proxyPort, state);
+startHostServer(hostPort, proxyPort, state);
