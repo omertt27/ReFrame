@@ -1,6 +1,7 @@
 import * as t from "@babel/types";
 
 import type { ClassAttrRef, ComponentDef, ComponentGraph, UsageSite } from "./graph.js";
+import { jsxChildren } from "./jsx-utils.js";
 
 export function resolveDefinition(graph: ComponentGraph, component: string): ComponentDef {
   const def = graph.definitions.get(component);
@@ -171,4 +172,28 @@ export function pageSectionOrder(graph: ComponentGraph, route: string): PageSect
     index++;
   }
   return sections;
+}
+
+/**
+ * Resolves an ElementPath — indices into element-producing children at each
+ * nesting level, same index space as pageSectionOrder/moveChild — to the
+ * specific JSX node it addresses, starting from a component's own root.
+ * `path: []` means the root element itself (today's existing behavior,
+ * unchanged). Returns null on any out-of-bounds index or a path that
+ * descends into something that isn't a plain JSX element (e.g. a nested
+ * fragment) — callers must treat null as "can't be safely resolved," never
+ * guess at the nearest match.
+ */
+export function resolveElementPath(
+  root: t.JSXElement | t.JSXFragment,
+  path: number[],
+): t.JSXElement | t.JSXFragment | null {
+  let current: t.JSXElement | t.JSXFragment = root;
+  for (const index of path) {
+    const elements = jsxChildren(current.children);
+    const next = elements[index];
+    if (!next) return null;
+    current = next;
+  }
+  return current;
 }

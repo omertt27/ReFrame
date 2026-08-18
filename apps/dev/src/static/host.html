@@ -126,6 +126,21 @@
         color: #8a8a90;
         margin-bottom: 16px;
       }
+      .breadcrumb {
+        font-size: 11px;
+        color: #6b6b70;
+        margin-bottom: 16px;
+        word-break: break-word;
+      }
+      .breadcrumb .crumb {
+        color: #b0b0b4;
+      }
+      .breadcrumb .crumb.leaf {
+        color: #f4a340;
+      }
+      .breadcrumb .sep {
+        margin: 0 4px;
+      }
       .scope {
         margin-bottom: 20px;
         border: 1px solid #222;
@@ -290,13 +305,17 @@
         }
       }
 
-      function resolveSelection(component, route) {
+      // `path`/`elementTag` are only present when the click came from inside
+      // a component (a nested JSX element), not from the Pages tree — an
+      // empty/omitted path means "the component's own root", same meaning
+      // as before this ever existed.
+      function resolveSelection(component, route, path, elementTag) {
         var body = document.getElementById("properties-body");
         body.innerHTML = '<div class="empty">resolving ' + component + " ...</div>";
         fetch("/__reframe/resolve", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ component: component, route: route }),
+          body: JSON.stringify({ component: component, route: route, path: path || [], elementTag: elementTag || null }),
         })
           .then(function (r) {
             return r.json();
@@ -346,11 +365,15 @@
           return;
         }
 
+        var path = result.path || [];
+        var isNested = path.length > 0;
+
         current = {
           component: result.component,
           route: result.route,
           usageCount: result.usageCount,
           availableInstance: result.kind === "usage",
+          path: path,
         };
         scope = "all";
 
@@ -362,6 +385,37 @@
             : "Page component";
         var scopeDisabledAttr = current.availableInstance ? "" : "disabled";
         var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + result.note + "</div>" : "";
+
+        // A nested element inside a component's render — not a new component,
+        // just a specific JSX node — gets a breadcrumb (its position within
+        // the render) instead of the "shared component" framing, and the
+        // instance/all-instances scope choice doesn't apply: a nested
+        // element's own className already resolves to exactly one branch for
+        // whichever component instance was clicked (see host.ts's mutate
+        // handler), there is nothing else to choose between.
+        var breadcrumbHtml = "";
+        var scopeHtml = "";
+        if (isNested && result.breadcrumb) {
+          breadcrumbHtml =
+            '<div class="breadcrumb">' +
+            result.breadcrumb
+              .map(function (name, i) {
+                var isLeaf = i === result.breadcrumb.length - 1;
+                return '<span class="crumb' + (isLeaf ? " leaf" : "") + '">' + name + "</span>";
+              })
+              .join('<span class="sep">→</span>') +
+            "</div>";
+        } else {
+          scopeHtml =
+            '<div class="scope">' +
+            '<label><input type="radio" name="scope" value="all" checked /> All instances</label>' +
+            '<label class="' +
+            (current.availableInstance ? "" : "disabled") +
+            '"><input type="radio" name="scope" value="instance" ' +
+            scopeDisabledAttr +
+            " /> This instance</label>" +
+            "</div>";
+        }
 
         var propsHtml = "(no editable properties here)";
         if (result.properties && result.properties.editable) {
@@ -382,15 +436,9 @@
           '<div class="selection-meta">' +
           metaText +
           "</div>" +
+          breadcrumbHtml +
           noteHtml +
-          '<div class="scope">' +
-          '<label><input type="radio" name="scope" value="all" checked /> All instances</label>' +
-          '<label class="' +
-          (current.availableInstance ? "" : "disabled") +
-          '"><input type="radio" name="scope" value="instance" ' +
-          scopeDisabledAttr +
-          " /> This instance</label>" +
-          "</div>" +
+          scopeHtml +
           propsHtml;
 
         Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (el) {
@@ -437,7 +485,7 @@
         }
 
         if (data.type !== "select") return;
-        resolveSelection(data.component, data.route);
+        resolveSelection(data.component, data.route, data.path, data.elementTag);
       });
 
       function mutate(property, px, backend) {
@@ -454,6 +502,7 @@
             property: property,
             px: px,
             backend: backend,
+            path: current.path || [],
           }),
         })
           .then(function (r) {
@@ -507,7 +556,7 @@
             var diffEl = document.getElementById("diff");
             diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
             refreshHistory();
-            if (result.ok && current) resolveSelection(current.component, current.route);
+            if (result.ok && current) resolveSelection(current.component, current.route, current.path);
           });
       }
 

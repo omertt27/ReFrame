@@ -10,6 +10,9 @@ importers:
 
   apps/dev:
     dependencies:
+      '@babel/types':
+        specifier: ^7.26.0
+        version: 7.29.8
       '@reframe/core':
         specifier: workspace:*
         version: link:../../packages/core

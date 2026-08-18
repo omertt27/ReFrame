@@ -3,12 +3,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import * as t from "@babel/types";
 import { createPatch } from "diff";
 
 import {
   applyClassMutation,
   EDITABLE_PROPERTIES,
+  extractClassAttr,
   extractClassIR,
+  extractStyleAttr,
   extractStyleIR,
   listPageRoutes,
   moveChild,
@@ -20,6 +23,7 @@ import {
   resolveComponentAtRoute,
   resolveDefinition,
   resolveDefinitionByFile,
+  resolveElementPath,
   routeToPageFile,
   writeProperty,
   writeStyleProperty,
@@ -66,6 +70,25 @@ function routeDisplayName(route: string): string {
  * used everywhere "this instance" vs "all instances" is decided. */
 function branchForValue(ir: { propName: string; testValue: string }, value: string | undefined): "consequent" | "alternate" {
   return value === ir.testValue ? "consequent" : "alternate";
+}
+
+function elementTagName(node: t.JSXElement | t.JSXFragment): string | null {
+  if (!t.isJSXElement(node)) return null;
+  const name = node.openingElement.name;
+  return t.isJSXIdentifier(name) ? name.name : null;
+}
+
+/** Ordered tag/component names from a component's own root down to the
+ * ElementPath target (inclusive) — feeds the breadcrumb UI so a nested
+ * selection reads as "main → section → h1", not just a bare tag name. */
+function breadcrumbFor(root: t.JSXElement | t.JSXFragment, path: number[]): string[] {
+  const names: string[] = [elementTagName(root) ?? "Fragment"];
+  for (let i = 0; i < path.length; i++) {
+    const node = resolveElementPath(root, path.slice(0, i + 1));
+    if (!node) break;
+    names.push(elementTagName(node) ?? "Fragment");
+  }
+  return names;
 }
 
 type Backend = "tailwind" | "style";
@@ -255,7 +278,12 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/resolve") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route } = body as { component?: string; route?: string };
+          const { component, route, path, elementTag } = body as {
+            component?: string;
+            route?: string;
+            path?: number[];
+            elementTag?: string;
+          };
           if (!component || typeof route !== "string") {
             sendJson(res, 400, { ok: false, error: "expected { component, route }" });
             return;
@@ -290,9 +318,46 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             void routeErr;
           }
 
-          const properties = readCurrentProperties(def.classAttr, def.styleAttr, props);
+          // A nested ElementPath (anything beyond the component's own root)
+          // resolves against a fresh classAttr/styleAttr pulled straight off
+          // the target JSX node — the same extraction the root already used,
+          // just pointed at a different node — so readCurrentProperties needs
+          // no changes at all to work on either. Never guess: a bad path or a
+          // tag mismatch (the DOM drifted from what the AST predicts, e.g. a
+          // conditional render) refuses instead of editing the wrong element.
+          let classAttr = def.classAttr;
+          let styleAttr = def.styleAttr;
+          let breadcrumb: string[] | undefined;
+          const hasPath = Array.isArray(path) && path.length > 0;
+          if (hasPath) {
+            const resolved = resolveElementPath(def.rootElement, path);
+            if (!resolved) {
+              sendJson(res, 200, { ok: false, error: "This element can't currently be edited safely." });
+              return;
+            }
+            const resolvedTag = elementTagName(resolved);
+            if (elementTag && resolvedTag && resolvedTag.toLowerCase() !== elementTag.toLowerCase()) {
+              sendJson(res, 200, { ok: false, error: "This element can't currently be edited safely." });
+              return;
+            }
+            classAttr = extractClassAttr(resolved);
+            styleAttr = extractStyleAttr(resolved);
+            breadcrumb = breadcrumbFor(def.rootElement, path);
+          }
 
-          sendJson(res, 200, { ok: true, kind, filePath, props, usageCount, note, properties });
+          const properties = readCurrentProperties(classAttr, styleAttr, props);
+
+          sendJson(res, 200, {
+            ok: true,
+            kind,
+            filePath,
+            props,
+            usageCount,
+            note,
+            properties,
+            path: hasPath ? path : [],
+            breadcrumb,
+          });
         })
         .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
       return;
@@ -301,13 +366,14 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/mutate") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, scope, property, px, backend } = body as {
+          const { component, route, scope, property, px, backend, path } = body as {
             component?: string;
             route?: string;
             scope?: "instance" | "all";
             property?: string;
             px?: number;
             backend?: Backend;
+            path?: number[];
           };
           if (!component || !route || !scope || !property || typeof px !== "number" || !backend) {
             sendJson(res, 400, { ok: false, error: "expected { component, route, scope, property, px, backend }" });
@@ -318,24 +384,43 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             const propDef = EDITABLE_PROPERTIES.find((p) => p.key === property);
             if (!propDef) throw new Error(`Unknown property "${property}"`);
 
+            // A nested ElementPath is resolved fresh against the live AST
+            // (not cached) so it reflects any earlier edit in this same
+            // request chain — same discipline applyTailwindPropertyEdit/
+            // applyStylePropertyEdit already use internally.
+            const hasPath = Array.isArray(path) && path.length > 0;
+            let targetNode: t.JSXElement | t.JSXFragment = def.rootElement;
+            if (hasPath) {
+              const resolved = resolveElementPath(def.rootElement, path);
+              if (!resolved) throw new Error("This element can't currently be edited safely.");
+              targetNode = resolved;
+            }
+
             const before = printFile(graph, def.filePath);
             let beforePx: number | null = null;
             let scopeLabel: string;
 
             if (backend === "style") {
-              if (!def.styleAttr) throw new Error(`"${component}" has no editable inline style`);
-              beforePx = applyStylePropertyEdit(def.styleAttr, propDef, px);
+              const styleAttr = hasPath ? extractStyleAttr(targetNode) : def.styleAttr;
+              if (!styleAttr) throw new Error(`"${component}" has no editable inline style`);
+              beforePx = applyStylePropertyEdit(styleAttr, propDef, px);
               scopeLabel = "this instance"; // style={{}} is always per-usage-site, no ternary scope
             } else {
-              if (!def.classAttr) throw new Error(`"${component}" has no editable root className`);
-              const fresh = extractClassIR(def.classAttr.attrNode);
+              const classAttr = hasPath ? extractClassAttr(targetNode) : def.classAttr;
+              if (!classAttr) throw new Error(`"${component}" has no editable root className`);
+              const fresh = extractClassIR(classAttr.attrNode);
               let branches: ("consequent" | "alternate" | null)[];
               if (!fresh) {
                 throw new Error("Nothing to edit");
               } else if (fresh.kind === "string") {
                 branches = [null];
               } else if (fresh.kind === "ternary") {
-                if (scope === "all") {
+                // A nested element's own className ternary still tests a prop
+                // of the *component instance* it lives inside — "all usages"
+                // isn't a meaningful scope for it (there's only ever one
+                // instance selected via the click that produced this path),
+                // so a path always resolves to the single matching branch.
+                if (!hasPath && scope === "all") {
                   branches = ["consequent", "alternate"];
                 } else {
                   const usage = resolveComponentAtRoute(graph, component, route);
@@ -348,10 +433,10 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 throw new Error(`className is unsupported: ${fresh.kind === "unsupported" ? fresh.reason : fresh.kind}`);
               }
               branches.forEach((branch, i) => {
-                const px0 = applyTailwindPropertyEdit(def.classAttr!, branch, propDef, px);
+                const px0 = applyTailwindPropertyEdit(classAttr, branch, propDef, px);
                 if (i === 0) beforePx = px0;
               });
-              scopeLabel = scope === "all" ? "all usages" : "this instance";
+              scopeLabel = !hasPath && scope === "all" ? "all usages" : "this instance";
             }
 
             const description = `${component} ${propDef.label}: ${beforePx !== null ? beforePx + "px" : "not set"} → ${px}px (${scopeLabel}, ${backend})`;

@@ -1,9 +1,6 @@
 import * as t from "@babel/types";
 
-/** A parent's JSX element children, indexed by position among elements only (text/whitespace ignored). */
-function jsxChildren(children: t.JSXElement["children"]): t.JSXElement[] {
-  return children.filter((c): c is t.JSXElement => t.isJSXElement(c));
-}
+import { jsxChildren } from "../jsx-utils.js";
 
 function isWhitespaceText(node: t.JSXElement["children"][number] | undefined): node is t.JSXText {
   return !!node && t.isJSXText(node) && node.value.trim() === "";

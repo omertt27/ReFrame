@@ -51,7 +51,11 @@ function findAttr(root: t.JSXElement | t.JSXFragment, attrName: string): t.JSXAt
   );
 }
 
-function extractClassAttr(root: t.JSXElement | t.JSXFragment) {
+/** Exported (not just used internally for ComponentDef.classAttr) so
+ * resolveElementPath results — arbitrary nested elements, not just
+ * component roots — can reuse the exact same extraction, keeping every
+ * downstream mutation function generic over "root or nested" for free. */
+export function extractClassAttr(root: t.JSXElement | t.JSXFragment) {
   const attr = findAttr(root, "className");
   if (!attr) return null;
   const ir = extractClassIR(attr);
@@ -59,7 +63,7 @@ function extractClassAttr(root: t.JSXElement | t.JSXFragment) {
   return { attrNode: attr, ir };
 }
 
-function extractStyleAttr(root: t.JSXElement | t.JSXFragment) {
+export function extractStyleAttr(root: t.JSXElement | t.JSXFragment) {
   const attr = findAttr(root, "style");
   if (!attr) return null;
   const ir = extractStyleIR(attr);

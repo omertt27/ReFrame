@@ -21,10 +21,35 @@
   }
 
   function matchName(fiber, names) {
+    var fn = fnMatchName(fiber, names);
+    if (fn) return fn;
+    return debugInfoMatchName(fiber, names);
+  }
+
+  // A component fiber's own type.name/displayName — only real for actual
+  // client-rendered function components. This match is exact and final: the
+  // fiber it fires on already IS the correct anchor (findSectionElements and
+  // the pre-existing component-only click resolution both rely on that), so
+  // resolveClick below never extends past it.
+  function fnMatchName(fiber, names) {
     if (fiber.type && typeof fiber.type === "function") {
       var n = fiber.type.name || fiber.type.displayName;
       if (n && names.indexOf(n) !== -1) return n;
     }
+    return null;
+  }
+
+  // Server Components leave no fiber of their own — _debugInfo is how the
+  // client tree remembers which server component produced a piece of JSX.
+  // Verified empirically against a real, unmodified production page
+  // (PrivaPDF's AboutPage, a plain `<>{scripts}<nav/><main>...</main></>`
+  // with zero nested components): this debugInfo is NOT confined to the
+  // single literal return value the way it was on the synthetic fixture
+  // used to design this — it also shows up on `main` itself, an immediate
+  // host child of the returned Fragment, one level short of the actual
+  // root. See resolveClick's chain-extension for how the true anchor is
+  // recovered from that.
+  function debugInfoMatchName(fiber, names) {
     if (fiber._debugInfo) {
       for (var i = 0; i < fiber._debugInfo.length; i++) {
         var d = fiber._debugInfo[i];
@@ -34,16 +59,96 @@
     return null;
   }
 
+  // Element-producing = would appear as a t.isJSXElement in the AST (host
+  // tags and component invocations) — deliberately excludes Fragment/
+  // Context/Suspense/memo-wrapper fibers, matching jsxChildren's filter on
+  // the server side. Both sides MUST agree on this or indices drift.
+  function isElementProducing(fiber) {
+    return typeof fiber.type === "string" || typeof fiber.type === "function";
+  }
+
+  // Index of `fiber` among its parent's element-producing children — the
+  // same index space as pageSectionOrder/moveChild/resolveElementPath.
+  function siblingIndex(fiber) {
+    var parent = fiber.return;
+    if (!parent) return -1;
+    var index = 0;
+    var cursor = parent.child;
+    while (cursor) {
+      if (cursor === fiber) return index;
+      if (isElementProducing(cursor)) index++;
+      cursor = cursor.sibling;
+    }
+    return -1;
+  }
+
+  // Walks fiber.return from the clicked leaf, same direction as the
+  // original component-only resolveClick, but also accumulates an
+  // ElementPath: the sequence of sibling indices from the matched
+  // component's AST root (packages/core's ComponentDef.rootElement) down
+  // to the clicked leaf. path: [] means the component's own root was
+  // clicked (identical to the old behavior).
+  //
+  // Finding that root fiber takes two passes, not one:
+  //  1. Walk up collecting the whole ancestor chain, and find the FIRST
+  //     fiber (closest to the leaf) that matches a known component, either
+  //     by fn identity (a real client-component fiber — exact and final,
+  //     no further walking needed) or by _debugInfo (a Server Component
+  //     boundary marker).
+  //  2. For a debugInfo match specifically, keep extending outward through
+  //     any consecutive ancestors that carry the SAME debugInfo name. This
+  //     is required because that marker is not confined to the literal
+  //     return value the way it looked on the synthetic fixture this was
+  //     first designed against — verified on a real, unmodified production
+  //     page (PrivaPDF's AboutPage) it also lands on `main`, an immediate
+  //     host child of the returned Fragment, one level short of the actual
+  //     root; only the Fragment fiber above it is the true anchor. Fn
+  //     matches don't get this treatment: extending past a real component
+  //     fiber would walk into its *caller*, not deeper into its own render.
   function resolveClick(target) {
     var fiber = getFiber(target);
+    if (!fiber) return null;
+
+    var chain = [];
     var depth = 0;
     while (fiber && depth < 60) {
-      var name = matchName(fiber, KNOWN);
-      if (name) return name;
+      chain.push(fiber);
       fiber = fiber.return;
       depth++;
     }
-    return null;
+
+    var anchorIndex = -1;
+    var matchedName = null;
+    for (var i = 0; i < chain.length; i++) {
+      var fnName = fnMatchName(chain[i], KNOWN);
+      if (fnName) {
+        anchorIndex = i;
+        matchedName = fnName;
+        break;
+      }
+      var dbName = debugInfoMatchName(chain[i], KNOWN);
+      if (dbName) {
+        anchorIndex = i;
+        matchedName = dbName;
+        var j = i + 1;
+        while (j < chain.length && debugInfoMatchName(chain[j], KNOWN) === matchedName) {
+          anchorIndex = j;
+          j++;
+        }
+        break;
+      }
+    }
+    if (anchorIndex === -1) return null;
+
+    var path = [];
+    for (var k = 0; k < anchorIndex; k++) {
+      if (isElementProducing(chain[k])) {
+        var idx = siblingIndex(chain[k]);
+        if (idx >= 0) path.push(idx);
+      }
+    }
+    path.reverse();
+    return { component: matchedName, path: path };
   }
 
   // Finds the outermost DOM element for each name in `names`, walking the
@@ -174,8 +279,8 @@
   document.addEventListener(
     "click",
     function (event) {
-      var name = resolveClick(event.target);
-      if (!name) return;
+      var resolved = resolveClick(event.target);
+      if (!resolved) return;
       event.preventDefault();
       event.stopPropagation();
       var rect = event.target.getBoundingClientRect();
@@ -183,7 +288,9 @@
         {
           source: "reframe-preload",
           type: "select",
-          component: name,
+          component: resolved.component,
+          path: resolved.path,
+          elementTag: event.target.tagName ? event.target.tagName.toLowerCase() : null,
           route: window.location.pathname,
           rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
         },

@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@babel/types": "^7.26.0",
     "@reframe/core": "workspace:*",
     "diff": "^7.0.0",
     "http-proxy": "^1.18.1"
