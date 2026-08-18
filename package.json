@@ -1,0 +1,9 @@
+{
+  "name": "reframe",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "test": "pnpm --filter core test",
+    "build": "pnpm --filter core build"
+  }
+}

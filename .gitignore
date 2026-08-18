@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+
+# manual local test scaffold, never intended for the repo
+/fixtures/
