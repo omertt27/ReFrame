@@ -1,6 +1,7 @@
 export * from "./graph.js";
 export * from "./class-ir.js";
 export * from "./style-ir.js";
+export * from "./text-ir.js";
 export * from "./jsx-utils.js";
 export * from "./parse.js";
 export * from "./load.js";
@@ -10,6 +11,7 @@ export * from "./mutate/prop.js";
 export * from "./mutate/move.js";
 export * from "./mutate/tailwind.js";
 export * from "./mutate/style.js";
+export * from "./mutate/text.js";
 export * from "./tailwind-scale.js";
 export * from "./properties.js";
 export * from "./write.js";

@@ -13,11 +13,14 @@ import {
   extractClassIR,
   extractStyleAttr,
   extractStyleIR,
+  extractTextIR,
+  findUtilityClass,
   listPageRoutes,
   moveChild,
   pageSectionOrder,
   printFile,
   readProperty,
+  readStyleObjectColor,
   readStyleObjectProperty,
   resolveAllUsages,
   resolveComponentAtRoute,
@@ -26,10 +29,14 @@ import {
   resolveElementPath,
   routeToPageFile,
   writeProperty,
+  writeStyleColor,
   writeStyleProperty,
+  writeTextContent,
   type ClassAttrRef,
+  type ComponentDef,
   type PropertyDef,
   type StyleAttrRef,
+  type StyleIR,
 } from "@reframe/core";
 
 import { pushHistory, redo, undo } from "./history.js";
@@ -72,6 +79,19 @@ function branchForValue(ir: { propName: string; testValue: string }, value: stri
   return value === ir.testValue ? "consequent" : "alternate";
 }
 
+/** Resolves which JSX node an operation should target — the component's own
+ * root when no path is given, or the specific nested node an ElementPath
+ * addresses. Shared by /resolve, /mutate, and /mutate-text so there's a
+ * single place that ever calls resolveElementPath directly. */
+function resolveTarget(def: ComponentDef, path: number[] | undefined): t.JSXElement | t.JSXFragment | null {
+  if (!Array.isArray(path) || path.length === 0) return def.rootElement;
+  return resolveElementPath(def.rootElement, path);
+}
+
+function truncate(s: string, max = 40): string {
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 function elementTagName(node: t.JSXElement | t.JSXFragment): string | null {
   if (!t.isJSXElement(node)) return null;
   const name = node.openingElement.name;
@@ -95,24 +115,103 @@ type Backend = "tailwind" | "style";
 
 interface PropertyReadInfo {
   available: boolean;
-  px: number | null;
+  kind: "dimension" | "color";
+  px?: number | null;
+  value?: string | null;
   reason?: string;
-  /** Which backend this value came from (or, if px is null, which backend
-   * a write would go to) — the client echoes this back on mutate, so the
+  /** Which backend this value came from (or, if not set, which backend a
+   * write would go to) — the client echoes this back on mutate, so the
    * server never has to re-derive a per-property backend decision that
    * might disagree with what was actually shown. */
   backend?: Backend;
 }
 
+const TAILWIND_COLOR_KEYWORDS = new Set(["black", "white", "transparent", "current", "inherit"]);
+
+/**
+ * Whether a className already sets a Tailwind COLOR utility for this
+ * prefix — advisory only, used to produce a clear refusal message; there is
+ * no Tailwind color-scale writer yet (see project memory
+ * `reframe-color-editing`), so this never feeds a write, only a reason
+ * string. "text-" is ambiguous in Tailwind's own naming (font-size
+ * utilities share the prefix — "text-lg", "text-[10px]"), so this requires
+ * either an exact palette keyword or a "-{shade-number}" suffix (matching
+ * "text-red-600") to count as a color; a bare size utility is never
+ * flagged.
+ */
+function hasTailwindColorUtility(classList: string, prefix: string): boolean {
+  const match = findUtilityClass(classList, prefix);
+  if (!match) return false;
+  const suffix = match.slice(prefix.length);
+  return TAILWIND_COLOR_KEYWORDS.has(suffix) || /-\d{2,3}$/.test(suffix);
+}
+
+function readDimensionValue(
+  prop: PropertyDef,
+  classList: string | null,
+  styleIR: StyleIR | null,
+  classUnsupportedReason: string | null,
+): PropertyReadInfo {
+  const fromTailwind = classList !== null ? readProperty(classList, prop) : null;
+  if (fromTailwind?.available && fromTailwind.px !== null) {
+    return { available: true, kind: "dimension", px: fromTailwind.px, backend: "tailwind" };
+  }
+  const fromStyle = styleIR ? readStyleObjectProperty(styleIR, prop) : null;
+  if (fromStyle?.available && fromStyle.px !== null) {
+    return { available: true, kind: "dimension", px: fromStyle.px, backend: "style" };
+  }
+  if (fromTailwind && !fromTailwind.available) return { available: false, kind: "dimension", reason: fromTailwind.reason };
+  if (fromStyle && !fromStyle.available) return { available: false, kind: "dimension", reason: fromStyle.reason };
+  if (classList !== null) return { available: true, kind: "dimension", px: null, backend: "tailwind" };
+  if (styleIR) return { available: true, kind: "dimension", px: null, backend: "style" };
+  return { available: false, kind: "dimension", reason: classUnsupportedReason ?? "no editable style found" };
+}
+
+/** Color is always the inline-style backend — see the plan/memory for why
+ * Tailwind color utilities are explicitly out of scope (no color-scale
+ * module exists the way tailwind-scale.ts does for spacing). A Tailwind
+ * color class already present is detected and refused with a specific
+ * reason rather than silently offering a style-backend edit that would
+ * visually override it (inline style always wins CSS specificity, but
+ * leaving a now-dead Tailwind class behind isn't what a developer wants). */
+function readColorValue(
+  prop: PropertyDef,
+  classList: string | null,
+  styleIR: StyleIR | null,
+  classUnsupportedReason: string | null,
+): PropertyReadInfo {
+  if (classList !== null && prop.prefix && hasTailwindColorUtility(classList, prop.prefix)) {
+    const existing = findUtilityClass(classList, prop.prefix);
+    return {
+      available: false,
+      kind: "color",
+      reason: `already set via a Tailwind utility class ("${existing}") — editing Tailwind color utilities isn't supported yet, only inline style colors`,
+    };
+  }
+  const fromStyle = styleIR ? readStyleObjectColor(styleIR, prop) : null;
+  if (fromStyle?.available && fromStyle.value !== null) {
+    return { available: true, kind: "color", value: fromStyle.value, backend: "style" };
+  }
+  if (fromStyle && !fromStyle.available) return { available: false, kind: "color", reason: fromStyle.reason };
+  if (styleIR) return { available: true, kind: "color", value: null, backend: "style" };
+  return {
+    available: false,
+    kind: "color",
+    reason: classUnsupportedReason ?? "no inline style on this element to add a color to — Tailwind color utilities aren't editable yet",
+  };
+}
+
 /**
  * Reads every editable property's current value across BOTH style backends
  * for one root element — the Style IR dispatch the real-world stress test
- * called for. Tailwind is preferred when a property is actually set there;
+ * called for. Tailwind is preferred when a dimension is actually set there;
  * inline style is checked next; if neither has it, "not set" defaults to
  * whichever backend exists (Tailwind if present, else style) so a
  * subsequent write has somewhere sensible to go. A property already set via
  * one backend is never silently rewritten into the other — see
  * mutate/style.ts and mutate/tailwind.ts's own guards for the enforcement.
+ * Color properties dispatch through readColorValue instead — a different
+ * value shape (a string, not a px number), see PropertyDef.valueKind.
  */
 function readCurrentProperties(
   classAttr: ClassAttrRef | null,
@@ -139,29 +238,10 @@ function readCurrentProperties(
 
   const values: Record<string, PropertyReadInfo> = {};
   for (const prop of EDITABLE_PROPERTIES) {
-    const fromTailwind = classList !== null ? readProperty(classList, prop) : null;
-    if (fromTailwind?.available && fromTailwind.px !== null) {
-      values[prop.key] = { available: true, px: fromTailwind.px, backend: "tailwind" };
-      continue;
-    }
-
-    const fromStyle = styleIR ? readStyleObjectProperty(styleIR, prop) : null;
-    if (fromStyle?.available && fromStyle.px !== null) {
-      values[prop.key] = { available: true, px: fromStyle.px, backend: "style" };
-      continue;
-    }
-
-    if (fromTailwind && !fromTailwind.available) {
-      values[prop.key] = { available: false, px: null, reason: fromTailwind.reason };
-    } else if (fromStyle && !fromStyle.available) {
-      values[prop.key] = { available: false, px: null, reason: fromStyle.reason };
-    } else if (classList !== null) {
-      values[prop.key] = { available: true, px: null, backend: "tailwind" };
-    } else if (styleIR) {
-      values[prop.key] = { available: true, px: null, backend: "style" };
-    } else {
-      values[prop.key] = { available: false, px: null, reason: classUnsupportedReason ?? "no editable style found" };
-    }
+    values[prop.key] =
+      prop.valueKind === "dimension"
+        ? readDimensionValue(prop, classList, styleIR, classUnsupportedReason)
+        : readColorValue(prop, classList, styleIR, classUnsupportedReason);
   }
   return { editable: true as const, values };
 }
@@ -204,6 +284,19 @@ function applyStylePropertyEdit(styleAttr: StyleAttrRef, prop: PropertyDef, px: 
   const result = writeStyleProperty(fresh, prop.cssProperty, px);
   if (!result.ok) throw new Error(result.reason);
   return before.available ? before.px : null;
+}
+
+/** The color counterpart to applyStylePropertyEdit — same re-read-fresh
+ * discipline, same "always this instance, no scope" rule (see
+ * readColorValue's doc comment for why Tailwind never applies here).
+ * Returns the previous value. */
+function applyStyleColorEdit(styleAttr: StyleAttrRef, prop: PropertyDef, value: string): string | null {
+  const fresh = extractStyleIR(styleAttr.attrNode);
+  if (!fresh) throw new Error("Expected a style object");
+  const before = readStyleObjectColor(fresh, prop);
+  const result = writeStyleColor(fresh, prop.cssProperty, value);
+  if (!result.ok) throw new Error(result.reason);
+  return before.available ? before.value : null;
 }
 
 function recordAndWrite(state: AppState, filePath: string, before: string, description: string) {
@@ -325,27 +418,31 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
           // no changes at all to work on either. Never guess: a bad path or a
           // tag mismatch (the DOM drifted from what the AST predicts, e.g. a
           // conditional render) refuses instead of editing the wrong element.
+          const hasPath = Array.isArray(path) && path.length > 0;
+          const target = resolveTarget(def, path);
+          if (!target) {
+            sendJson(res, 200, { ok: false, error: "This element can't currently be edited safely." });
+            return;
+          }
+
           let classAttr = def.classAttr;
           let styleAttr = def.styleAttr;
           let breadcrumb: string[] | undefined;
-          const hasPath = Array.isArray(path) && path.length > 0;
           if (hasPath) {
-            const resolved = resolveElementPath(def.rootElement, path);
-            if (!resolved) {
-              sendJson(res, 200, { ok: false, error: "This element can't currently be edited safely." });
-              return;
-            }
-            const resolvedTag = elementTagName(resolved);
+            const resolvedTag = elementTagName(target);
             if (elementTag && resolvedTag && resolvedTag.toLowerCase() !== elementTag.toLowerCase()) {
               sendJson(res, 200, { ok: false, error: "This element can't currently be edited safely." });
               return;
             }
-            classAttr = extractClassAttr(resolved);
-            styleAttr = extractStyleAttr(resolved);
-            breadcrumb = breadcrumbFor(def.rootElement, path);
+            classAttr = extractClassAttr(target);
+            styleAttr = extractStyleAttr(target);
+            breadcrumb = breadcrumbFor(def.rootElement, path!);
           }
 
           const properties = readCurrentProperties(classAttr, styleAttr, props);
+          const textIR = extractTextIR(target);
+          const text =
+            textIR.kind === "text" ? { editable: true as const, value: textIR.value } : { editable: false as const, reason: textIR.reason };
 
           sendJson(res, 200, {
             ok: true,
@@ -355,6 +452,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             usageCount,
             note,
             properties,
+            text,
             path: hasPath ? path : [],
             breadcrumb,
           });
@@ -366,17 +464,18 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/mutate") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, scope, property, px, backend, path } = body as {
+          const { component, route, scope, property, px, value, backend, path } = body as {
             component?: string;
             route?: string;
             scope?: "instance" | "all";
             property?: string;
             px?: number;
+            value?: string;
             backend?: Backend;
             path?: number[];
           };
-          if (!component || !route || !scope || !property || typeof px !== "number" || !backend) {
-            sendJson(res, 400, { ok: false, error: "expected { component, route, scope, property, px, backend }" });
+          if (!component || !route || !scope || !property || !backend || (typeof px !== "number" && typeof value !== "string")) {
+            sendJson(res, 400, { ok: false, error: "expected { component, route, scope, property, backend, px } or { ..., value }" });
             return;
           }
           try {
@@ -389,14 +488,30 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             // request chain — same discipline applyTailwindPropertyEdit/
             // applyStylePropertyEdit already use internally.
             const hasPath = Array.isArray(path) && path.length > 0;
-            let targetNode: t.JSXElement | t.JSXFragment = def.rootElement;
-            if (hasPath) {
-              const resolved = resolveElementPath(def.rootElement, path);
-              if (!resolved) throw new Error("This element can't currently be edited safely.");
-              targetNode = resolved;
-            }
+            const targetNode = resolveTarget(def, path);
+            if (!targetNode) throw new Error("This element can't currently be edited safely.");
 
             const before = printFile(graph, def.filePath);
+
+            // Color is always the inline-style backend, always "this
+            // instance" — no ternary-branch scope question, same as nested
+            // style edits already are. Kept as its own short path rather
+            // than folded into the dimension branch below since the two
+            // barely share any logic once you're past "resolve the style
+            // attr" (see readColorValue's doc comment for why Tailwind
+            // color classes are refused rather than written).
+            if (propDef.valueKind === "color") {
+              if (typeof value !== "string") throw new Error(`"${property}" is a color property — expected { value }`);
+              const styleAttr = hasPath ? extractStyleAttr(targetNode) : def.styleAttr;
+              if (!styleAttr) throw new Error(`"${component}" has no editable inline style`);
+              const beforeValue = applyStyleColorEdit(styleAttr, propDef, value);
+              const description = `${component} ${propDef.label}: ${beforeValue ?? "not set"} → ${value} (this instance, style)`;
+              const { diff } = recordAndWrite(state, def.filePath, before, description);
+              sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
+              return;
+            }
+            if (typeof px !== "number") throw new Error(`"${property}" is a dimension property — expected { px }`);
+
             let beforePx: number | null = null;
             let scopeLabel: string;
 
@@ -440,6 +555,42 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             }
 
             const description = `${component} ${propDef.label}: ${beforePx !== null ? beforePx + "px" : "not set"} → ${px}px (${scopeLabel}, ${backend})`;
+            const { diff } = recordAndWrite(state, def.filePath, before, description);
+
+            sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
+          } catch (err) {
+            sendJson(res, 200, { ok: false, error: (err as Error).message });
+          }
+        })
+        .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__reframe/mutate-text") {
+      readJsonBody(req)
+        .then((body) => {
+          const { component, route, path, value } = body as {
+            component?: string;
+            route?: string;
+            path?: number[];
+            value?: string;
+          };
+          if (!component || typeof route !== "string" || typeof value !== "string") {
+            sendJson(res, 400, { ok: false, error: "expected { component, route, value }" });
+            return;
+          }
+          try {
+            const def = resolveDefinition(graph, component);
+            const target = resolveTarget(def, path);
+            if (!target) throw new Error("This element can't currently be edited safely.");
+
+            const before = printFile(graph, def.filePath);
+            const ir = extractTextIR(target);
+            const beforeValue = ir.kind === "text" ? ir.value : null;
+            const result = writeTextContent(ir, value);
+            if (!result.ok) throw new Error(result.reason);
+
+            const description = `${component} text: "${truncate(beforeValue ?? "")}" → "${truncate(value)}"`;
             const { diff } = recordAndWrite(state, def.filePath, before, description);
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });

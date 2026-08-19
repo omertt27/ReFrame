@@ -180,6 +180,21 @@
       .field input:disabled {
         opacity: 0.35;
       }
+      .field textarea {
+        width: 100%;
+        background: #0b0b0d;
+        border: 1px solid #2a2a2e;
+        color: #f5f5f5;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 13px;
+        font-family: inherit;
+        resize: vertical;
+        min-height: 60px;
+      }
+      .field textarea:disabled {
+        opacity: 0.35;
+      }
       .field .unavailable {
         font-size: 11px;
         color: #6b6b70;
@@ -358,6 +373,62 @@
         );
       }
 
+      function escapeHtml(s) {
+        return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      }
+
+      // A plain text input, not a native <input type=color> — that widget
+      // only accepts 6-digit hex and can't represent "var(--accent)" or a
+      // named color, and a preview swatch can't resolve what a CSS variable
+      // evaluates to from this document anyway (it's defined in the target
+      // page's own stylesheet). Shows the raw current value verbatim,
+      // whatever form it's already in — same "preserve the author's
+      // representation" principle as the dimension fields.
+      function colorField(key, label, prop) {
+        var disabled = !prop || !prop.available;
+        var value = prop && prop.available && prop.value !== null ? prop.value : "";
+        var note = !prop || prop.available ? "" : '<div class="unavailable">' + prop.reason + "</div>";
+        var backendLabel = prop && prop.backend ? " · " + prop.backend : "";
+        return (
+          '<div class="field">' +
+          "<label>" +
+          label +
+          backendLabel +
+          "</label>" +
+          '<input type="text" data-property="' +
+          key +
+          '" data-value-kind="color" data-backend="' +
+          (prop && prop.backend ? prop.backend : "") +
+          '" value="' +
+          escapeHtml(value) +
+          '" placeholder="e.g. #3B82F6 or var(--accent)" ' +
+          (disabled ? "disabled" : "") +
+          " />" +
+          note +
+          "</div>"
+        );
+      }
+
+      // Content is shown above the style properties — for a "click it, change
+      // it" editor, the text itself is the primary edit most people reach
+      // for, not padding. Only plain single-text-node elements are editable
+      // here (see text-ir.ts) — mixed text+markup or `{expression}` content
+      // shows the specific unsupported reason instead of a guess.
+      function textField(text) {
+        if (!text || !text.editable) {
+          var reason = text ? text.reason : "no editable text here";
+          return '<div class="field"><label>Content</label><div class="unavailable">' + reason + "</div></div>";
+        }
+        return (
+          '<div class="field">' +
+          "<label>Content</label>" +
+          '<textarea data-text-field rows="3">' +
+          escapeHtml(text.value) +
+          "</textarea>" +
+          "</div>"
+        );
+      }
+
       function renderProperties(result) {
         var body = document.getElementById("properties-body");
         if (!result.ok) {
@@ -421,8 +492,16 @@
         if (result.properties && result.properties.editable) {
           propsHtml = Object.keys(result.properties.values)
             .map(function (key) {
-              var labels = { height: "Height", width: "Width", padding: "Padding" };
-              return propertyField(key, labels[key] || key, result.properties.values[key]);
+              var labels = {
+                height: "Height",
+                width: "Width",
+                padding: "Padding",
+                textColor: "Text color",
+                backgroundColor: "Background color",
+              };
+              var prop = result.properties.values[key];
+              var label = labels[key] || key;
+              return prop && prop.kind === "color" ? colorField(key, label, prop) : propertyField(key, label, prop);
             })
             .join("");
         } else if (result.properties) {
@@ -438,6 +517,7 @@
           "</div>" +
           breadcrumbHtml +
           noteHtml +
+          textField(result.text) +
           scopeHtml +
           propsHtml;
 
@@ -448,9 +528,19 @@
         });
         Array.prototype.forEach.call(document.querySelectorAll("input[data-property]"), function (el) {
           el.addEventListener("change", function () {
-            mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
+            if (el.getAttribute("data-value-kind") === "color") {
+              mutateColor(el.getAttribute("data-property"), el.value, el.getAttribute("data-backend"));
+            } else {
+              mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
+            }
           });
         });
+        var textEl = document.querySelector("textarea[data-text-field]");
+        if (textEl) {
+          textEl.addEventListener("change", function () {
+            mutateText(textEl.value);
+          });
+        }
       }
 
       window.addEventListener("message", function (event) {
@@ -503,6 +593,61 @@
             px: px,
             backend: backend,
             path: current.path || [],
+          }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            if (result.ok) refreshHistory();
+          })
+          .catch(function (err) {
+            diffEl.textContent = "error: " + err;
+          });
+      }
+
+      function mutateColor(property, value, backend) {
+        if (!current) return;
+        var diffEl = document.getElementById("diff");
+        diffEl.textContent = "applying " + property + " = " + value + " (" + backend + ") ...";
+        fetch("/__reframe/mutate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            component: current.component,
+            route: current.route,
+            scope: scope,
+            property: property,
+            value: value,
+            backend: backend,
+            path: current.path || [],
+          }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            if (result.ok) refreshHistory();
+          })
+          .catch(function (err) {
+            diffEl.textContent = "error: " + err;
+          });
+      }
+
+      function mutateText(value) {
+        if (!current) return;
+        var diffEl = document.getElementById("diff");
+        diffEl.textContent = "applying text edit ...";
+        fetch("/__reframe/mutate-text", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            component: current.component,
+            route: current.route,
+            path: current.path || [],
+            value: value,
           }),
         })
           .then(function (r) {

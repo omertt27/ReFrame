@@ -5,28 +5,51 @@ import * as t from "@babel/types";
  * boundary philosophy: a style value either matches a recognized shape, or
  * comes back "unsupported" with a specific reason, never guessed at.
  *
- * Recognized today: a numeric literal (`height: 44`, React's px-by-default
- * convention) or a plain "<number>px" string (`padding: "12px"`). The
- * number-vs-string form is remembered per property so a write preserves
- * whichever convention the author already used — see mutate/style.ts.
+ * Recognized today:
+ *   - a numeric literal (`height: 44`, React's px-by-default convention) or
+ *     a plain "<number>px" string (`padding: "12px"`). The number-vs-string
+ *     form is remembered per property so a write preserves whichever
+ *     convention the author already used — see mutate/style.ts.
+ *   - any other plain string literal, generically treated as a "color"
+ *     candidate — `color: "#3B82F6"`, `color: "var(--accent)"`,
+ *     `color: "rebeccapurple"` are all structurally identical at the AST
+ *     level (a StringLiteral), so there's nothing to disambiguate between
+ *     hex/rgb/named/CSS-variable forms here; a write just replaces the
+ *     string as-is, preserving whichever form was already there (never
+ *     attempting to resolve what a CSS variable currently evaluates to —
+ *     see project memory `reframe-style-ir` for why this was left
+ *     unsupported originally, and `reframe` color-editing follow-up for why
+ *     that's now safe to lift: nothing surfaces this as an editable color
+ *     unless a PropertyDef explicitly asks for it by cssProperty name, so a
+ *     stray non-color string value like `fontFamily: "var(--serif)"`
+ *     extracted this way just sits unused in the map, same as before).
  *
  * Explicitly NOT supported (reported, not guessed):
- *   - a CSS custom property reference (`color: "var(--accent)"`) — this is
- *     exactly PrivaPDF's SectionHeader pattern found in the real-world
- *     stress test; editing it would mean resolving what the variable
- *     currently evaluates to, which V0 doesn't attempt
  *   - a shorthand multi-value string (`padding: "12px 24px"`) — which of
  *     the two values does a single "Padding" control mean? Ambiguous
- *     without a real multi-value UI, not guessed at here
+ *     without a real multi-value UI, not guessed at here (still refused:
+ *     the px-string regex requires the ENTIRE string to be one length)
  *   - any computed/templated/non-literal expression
  */
 export type StylePropertyIR =
   | { kind: "px"; value: number; form: "number" | "pxString"; node: t.NumericLiteral | t.StringLiteral }
+  | { kind: "color"; value: string; node: t.StringLiteral }
   | { kind: "unsupported"; reason: string; node: t.Node };
 
 export type StyleIR =
   | { kind: "object"; properties: Map<string, StylePropertyIR>; node: t.ObjectExpression }
   | { kind: "unsupported"; reason: string };
+
+/** e.g. "12px 24px" or "10px 20px 10px 20px" — two or more independent
+ * length-like tokens separated by whitespace. A color value never matches
+ * this: a function call like "rgb(59, 130, 246)" has no whitespace-
+ * separated segment that is itself a bare length, and named colors /
+ * CSS-variable references have no internal whitespace at all. */
+function looksLikeMultiValueShorthand(value: string): boolean {
+  const segments = value.trim().split(/\s+/);
+  const lengthLike = /^-?\d+(?:\.\d+)?(px|rem|em|%)$/;
+  return segments.filter((s) => lengthLike.test(s)).length >= 2;
+}
 
 function extractStyleProperty(value: t.Expression, node: t.Node): StylePropertyIR {
   if (t.isNumericLiteral(value)) {
@@ -37,13 +60,19 @@ function extractStyleProperty(value: t.Expression, node: t.Node): StylePropertyI
     if (match) {
       return { kind: "px", value: Number(match[1]), form: "pxString", node: value };
     }
-    return {
-      kind: "unsupported",
-      reason: `value "${value.value}" isn't a plain px length — likely a CSS variable reference or shorthand (multiple values), not traced/disambiguated in V0`,
-      node,
-    };
+    if (looksLikeMultiValueShorthand(value.value)) {
+      return {
+        kind: "unsupported",
+        reason: `value "${value.value}" looks like a multi-value shorthand (e.g. "12px 24px") — which value would a single control mean? not disambiguated in V0`,
+        node,
+      };
+    }
+    // Any other plain string — a color, most commonly ("#3B82F6",
+    // "var(--accent)", "rebeccapurple") — nothing left to disambiguate
+    // structurally; see the doc comment above for why this is safe.
+    return { kind: "color", value: value.value, node: value };
   }
-  return { kind: "unsupported", reason: "value isn't a numeric or plain px-string literal", node };
+  return { kind: "unsupported", reason: "value isn't a numeric or plain string literal", node };
 }
 
 export function extractStyleIR(attr: t.JSXAttribute): StyleIR | null {

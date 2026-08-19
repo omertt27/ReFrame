@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { EDITABLE_PROPERTIES, readStyleObjectProperty } from "../src/properties.js";
-import { writeStyleProperty } from "../src/mutate/style.js";
+import { EDITABLE_PROPERTIES, readStyleObjectColor, readStyleObjectProperty, type PropertyDef } from "../src/properties.js";
+import { writeStyleColor, writeStyleProperty } from "../src/mutate/style.js";
 import { buildComponentGraph } from "../src/parse.js";
 import { resolveDefinition } from "../src/resolve.js";
 import { printFile } from "../src/write.js";
 
 const height = EDITABLE_PROPERTIES.find((p) => p.key === "height")!;
 const padding = EDITABLE_PROPERTIES.find((p) => p.key === "padding")!;
+const background: PropertyDef = { key: "background", label: "Background", valueKind: "color", cssProperty: "background" };
 
 function loadStyled(source: string) {
   return buildComponentGraph([{ filePath: "X.tsx", source }]);
@@ -36,15 +37,17 @@ describe("style IR — recognized shapes", () => {
 });
 
 describe("style IR — unsupported shapes, reported not guessed", () => {
-  it("refuses a CSS variable reference (PrivaPDF's exact SectionHeader pattern)", () => {
+  it("a CSS variable reference reads as a color, not a dimension (PrivaPDF's exact SectionHeader pattern)", () => {
     const graph = loadStyled(
       `export default function X() { return <div style={{ background: "var(--accent-light)" }}>x</div>; }`,
     );
     const def = resolveDefinition(graph, "X");
-    const bg = { key: "background", label: "Background", prefix: "bg-", cssProperty: "background" };
-    const read = readStyleObjectProperty(def.styleAttr!.ir, bg);
-    expect(read.available).toBe(false);
-    expect(!read.available && read.reason).toMatch(/CSS variable|shorthand/);
+    const dimensionRead = readStyleObjectProperty(def.styleAttr!.ir, background);
+    expect(dimensionRead.available).toBe(false);
+    expect(!dimensionRead.available && dimensionRead.reason).toMatch(/color/);
+
+    const colorRead = readStyleObjectColor(def.styleAttr!.ir, background);
+    expect(colorRead).toEqual({ available: true, value: "var(--accent-light)" });
   });
 
   it("refuses a shorthand multi-value string", () => {
@@ -99,6 +102,60 @@ describe("style IR — writes preserve the author's number-vs-string convention"
     const def = resolveDefinition(graph, "X");
     const result = writeStyleProperty(def.styleAttr!.ir, "background", 1);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("style IR — color values (hex/rgb/named/CSS-variable, all just a raw string)", () => {
+  it.each([
+    ["#3B82F6", "hex"],
+    ["rgb(59, 130, 246)", "rgb()"],
+    ["rebeccapurple", "named"],
+    ["var(--accent)", "CSS variable"],
+  ])("recognizes a %s color value (%s)", (value) => {
+    const graph = loadStyled(`export default function X() { return <div style={{ color: "${value}" }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const textColor: PropertyDef = { key: "textColor", label: "Text color", valueKind: "color", cssProperty: "color" };
+    expect(readStyleObjectColor(def.styleAttr!.ir, textColor)).toEqual({ available: true, value });
+  });
+
+  it("reports value: null when the color property isn't set at all", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ height: 44 }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    expect(readStyleObjectColor(def.styleAttr!.ir, background)).toEqual({ available: true, value: null });
+  });
+
+  it("writes a new color value, replacing whatever was there — preserving the form (a var() edit stays a plain string, never resolved)", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ background: "var(--accent-light)" }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleColor(def.styleAttr!.ir, "background", "#3B82F6");
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after).toContain('background: "#3B82F6"');
+    expect(after).not.toContain("var(--accent-light)");
+  });
+
+  it("appends a new color property when not present before", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ height: 44 }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleColor(def.styleAttr!.ir, "color", "var(--accent)");
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after).toContain("height: 44");
+    expect(after).toContain('color: "var(--accent)"');
+  });
+
+  it("refuses to write a color over an existing dimension value", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ height: 44 }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleColor(def.styleAttr!.ir, "height", "red");
+    expect(result.ok).toBe(false);
+  });
+
+  it("a shorthand multi-value string still stays unsupported, not misread as a color", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ padding: "12px 24px" }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const paddingColor: PropertyDef = { key: "padding", label: "Padding", valueKind: "color", cssProperty: "padding" };
+    expect(readStyleObjectColor(def.styleAttr!.ir, paddingColor).available).toBe(false);
   });
 });
 

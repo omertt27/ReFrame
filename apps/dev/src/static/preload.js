@@ -67,16 +67,41 @@
     return typeof fiber.type === "string" || typeof fiber.type === "function";
   }
 
+  // Name of the function component whose OWN JSX literally created this
+  // fiber — React's dev-mode "owner" pointer, distinct from fiber.return
+  // (the render tree parent). Only meaningful for client-rendered fibers;
+  // Server Component output (reached via _debugInfo, not real client
+  // fibers) never sets it, in which case this returns null and every
+  // caller below treats that as "no constraint, don't filter" — a graceful
+  // no-op for the Server Component case this was originally verified
+  // against, and the reason it was safe to bolt on afterward without
+  // re-touching that path.
+  function ownerName(fiber) {
+    var owner = fiber._debugOwner;
+    if (!owner || typeof owner.type !== "function") return null;
+    return owner.type.name || owner.type.displayName || null;
+  }
+
   // Index of `fiber` among its parent's element-producing children — the
   // same index space as pageSectionOrder/moveChild/resolveElementPath.
+  // Verified live against PrivaPDF's real /convert page: a plain
+  // `<Link>Priva<span>PDF</span></Link>` (one JSXElement in the source)
+  // expands, on the client, into several extra fiber layers for Link's own
+  // implementation (an inner <a>, a context provider) that don't exist in
+  // the AST at all. Left unfiltered, those inflate the sibling count and
+  // drift `path` off the intended element. Restricting the count to
+  // siblings that share `fiber`'s own owner (when it has one) collapses
+  // that whole foreign subtree back down to the single slot it actually
+  // occupies in the JSX that was literally written.
   function siblingIndex(fiber) {
     var parent = fiber.return;
     if (!parent) return -1;
+    var wantOwner = ownerName(fiber);
     var index = 0;
     var cursor = parent.child;
     while (cursor) {
       if (cursor === fiber) return index;
-      if (isElementProducing(cursor)) index++;
+      if (isElementProducing(cursor) && (wantOwner === null || ownerName(cursor) === wantOwner)) index++;
       cursor = cursor.sibling;
     }
     return -1;
@@ -105,6 +130,16 @@
   //     root; only the Fragment fiber above it is the true anchor. Fn
   //     matches don't get this treatment: extending past a real component
   //     fiber would walk into its *caller*, not deeper into its own render.
+  //
+  // The fiber that directly corresponds to the matched component's own
+  // rootElement differs by match kind: a debugInfo match (after extension)
+  // already lands ON that fiber. An fn match lands on the component's own
+  // invocation fiber instead — its RENDER OUTPUT, one level further down
+  // the chain (chain[anchorIndex - 1]), is the actual root. That fiber
+  // itself is never indexed (nothing "above" it, within the component's own
+  // JSX, that it's a child of) — verified live against PrivaPDF's real
+  // /convert page, where skipping this produced a spurious leading index
+  // otherwise (path: [0,0,0,0,0] instead of the correct [0,0,0]).
   function resolveClick(target) {
     var fiber = getFiber(target);
     if (!fiber) return null;
@@ -119,17 +154,20 @@
 
     var anchorIndex = -1;
     var matchedName = null;
+    var matchedVia = null;
     for (var i = 0; i < chain.length; i++) {
       var fnName = fnMatchName(chain[i], KNOWN);
       if (fnName) {
         anchorIndex = i;
         matchedName = fnName;
+        matchedVia = "fn";
         break;
       }
       var dbName = debugInfoMatchName(chain[i], KNOWN);
       if (dbName) {
         anchorIndex = i;
         matchedName = dbName;
+        matchedVia = "debugInfo";
         var j = i + 1;
         while (j < chain.length && debugInfoMatchName(chain[j], KNOWN) === matchedName) {
           anchorIndex = j;
@@ -140,8 +178,11 @@
     }
     if (anchorIndex === -1) return null;
 
+    var rootFiberIndex = matchedVia === "fn" ? anchorIndex - 1 : anchorIndex;
     var path = [];
-    for (var k = 0; k < anchorIndex; k++) {
+    for (var k = 0; k < rootFiberIndex; k++) {
+      var owner = ownerName(chain[k]);
+      if (owner !== null && owner !== matchedName) continue; // foreign component's own internals, not literal JSX here
       if (isElementProducing(chain[k])) {
         var idx = siblingIndex(chain[k]);
         if (idx >= 0) path.push(idx);
