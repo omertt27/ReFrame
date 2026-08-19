@@ -380,7 +380,13 @@ function readCurrentProperties(
     }
     values[prop.key] = info;
   }
-  return { editable: true as const, values };
+  // No PropertyDef currently targets a custom CSS property, so this can't
+  // point at a specific field — it's a general "there's more style here
+  // than what's shown" note. See style-ir.ts's extractStyleIR for what
+  // sets this (a computed/bracket property key, e.g. a `key as any` TS
+  // cast — verified real via Excalidraw's Card.tsx theming pattern).
+  const hasHiddenStyleProperties = styleIR?.kind === "object" && styleIR.hasUnsupportedComputedKeys;
+  return { editable: true as const, values, hasHiddenStyleProperties };
 }
 
 /** Applies one property edit to one Tailwind branch (or the plain string),

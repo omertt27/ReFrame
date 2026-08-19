@@ -499,6 +499,7 @@
         }
 
         var propsHtml = "(no editable properties here)";
+        var hiddenStyleNote = "";
         if (result.properties && result.properties.editable) {
           propsHtml = Object.keys(result.properties.values)
             .map(function (key) {
@@ -518,6 +519,15 @@
               return prop && prop.kind === "color" ? colorField(key, label, prop) : propertyField(key, label, prop);
             })
             .join("");
+          // Never guess which property a computed/bracket style key (e.g. a
+          // `key as any` TS cast) would have mapped to — just say plainly
+          // that this element's style object has more in it than what's
+          // shown, rather than silently pretending those properties don't
+          // exist at all.
+          if (result.properties.hasHiddenStyleProperties) {
+            hiddenStyleNote =
+              '<div class="unavailable" style="margin-bottom: 14px">This element\'s style has at least one property ReFrame can\'t read (a computed/bracket key) — not shown above, not touched by any edit here.</div>';
+          }
         } else if (result.properties) {
           propsHtml = '<div class="unavailable">' + result.properties.reason + "</div>";
         }
@@ -533,6 +543,7 @@
           noteHtml +
           textField(result.text) +
           scopeHtml +
+          hiddenStyleNote +
           propsHtml;
 
         Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (el) {

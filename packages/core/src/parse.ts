@@ -57,6 +57,16 @@ function findComponentJsx(body: t.BlockStatement | t.Expression): t.JSXElement |
   return null;
 }
 
+/** `forwardRef(...)` or `React.forwardRef(...)` — both verified as real via
+ * Excalidraw (`export const FilledButton = forwardRef<...>(...)`,
+ * `export const Island = React.forwardRef<...>(...)`). Generic type
+ * arguments (`<HTMLButtonElement, Props>`) don't affect this — they're not
+ * part of the callee expression at all. */
+function isForwardRefCallee(callee: t.Expression | t.V8IntrinsicIdentifier): boolean {
+  if (t.isIdentifier(callee)) return callee.name === "forwardRef";
+  return t.isMemberExpression(callee) && t.isIdentifier(callee.object) && callee.object.name === "React" && t.isIdentifier(callee.property) && callee.property.name === "forwardRef";
+}
+
 function findAttr(root: t.JSXElement | t.JSXFragment, attrName: string): t.JSXAttribute | null {
   if (!t.isJSXElement(root)) return null; // fragments can't carry attributes
   return (
@@ -114,18 +124,18 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
   }
 
   // Pass 1: component definitions — a capitalized name, function body
-  // returning JSX, in either of React's two common declaration shapes:
-  // `function X() {}` (FunctionDeclaration) or `const X = (...) => {}` /
+  // returning JSX, in any of React's common declaration shapes:
+  // `function X() {}` (FunctionDeclaration); `const X = (...) => {}` /
   // `const X = function (...) {}` (an arrow/function expression assigned
-  // to a const). The second shape was completely unrecognized before —
-  // found and fixed via a real-world comparison against a second project
-  // (Excalidraw) that uses it almost exclusively; see project memory
+  // to a const); or `const X = forwardRef((props, ref) => {...})` /
+  // `const X = React.forwardRef<T, P>((props, ref) => {...})` (the same
+  // arrow/function expression, one call deeper). The arrow/const shapes
+  // were completely unrecognized before this — found and fixed via a
+  // real-world comparison against a second project (Excalidraw) that uses
+  // them almost exclusively; see project memory
   // `reframe-second-project-comparison` for how stark the gap was (68/68
-  // FunctionDeclaration in PrivaPDF vs 68/86 arrow-const in Excalidraw).
-  // Deliberately still NOT handling forwardRef-wrapped components
-  // (`const X = forwardRef((props, ref) => {...})`) — a real but distinct,
-  // less common shape (8/86 files in that same comparison), left for a
-  // separate pass rather than folded into this fix.
+  // FunctionDeclaration in PrivaPDF vs 68/86 arrow-const, 8/86 forwardRef,
+  // in Excalidraw).
   function registerDefinition(name: string, filePath: string, rootElement: t.JSXElement | t.JSXFragment) {
     definitions.set(name, {
       name,
@@ -150,10 +160,21 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
         const id = path.node.id;
         if (!t.isIdentifier(id) || !/^[A-Z]/.test(id.name)) return;
         const init = path.node.init;
-        if (!init || !(t.isArrowFunctionExpression(init) || t.isFunctionExpression(init))) return;
-        const rootElement = findComponentJsx(init.body);
-        if (!rootElement) return;
-        registerDefinition(id.name, filePath, rootElement);
+        if (!init) return;
+
+        if (t.isArrowFunctionExpression(init) || t.isFunctionExpression(init)) {
+          const rootElement = findComponentJsx(init.body);
+          if (rootElement) registerDefinition(id.name, filePath, rootElement);
+          return;
+        }
+
+        if (t.isCallExpression(init) && isForwardRefCallee(init.callee)) {
+          const inner = init.arguments[0];
+          if (inner && (t.isArrowFunctionExpression(inner) || t.isFunctionExpression(inner))) {
+            const rootElement = findComponentJsx(inner.body);
+            if (rootElement) registerDefinition(id.name, filePath, rootElement);
+          }
+        }
       },
     });
   }

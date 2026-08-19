@@ -47,7 +47,7 @@ export type StylePropertyIR =
   | { kind: "unsupported"; reason: string; node: t.Node };
 
 export type StyleIR =
-  | { kind: "object"; properties: Map<string, StylePropertyIR>; node: t.ObjectExpression }
+  | { kind: "object"; properties: Map<string, StylePropertyIR>; node: t.ObjectExpression; hasUnsupportedComputedKeys: boolean }
   | { kind: "unsupported"; reason: string };
 
 /** e.g. "12px 24px" or "10px 20px 10px 20px" — two or more independent
@@ -97,12 +97,27 @@ export function extractStyleIR(attr: t.JSXAttribute): StyleIR | null {
   }
 
   const properties = new Map<string, StylePropertyIR>();
+  // Verified against a real, popular second project (Excalidraw's Card.tsx,
+  // `style={{ ["--card-color" as any]: COLOR_MAP[color].base }}` — a
+  // computed/bracket key, common for setting CSS custom properties
+  // dynamically): a property whose key isn't a plain Identifier or
+  // StringLiteral has no static name to record it under, so it was
+  // previously just dropped from the map entirely — silently, not
+  // "unsupported." No PropertyDef targets a custom CSS property today, so
+  // this had no practical effect yet, but "silently missing" is worse than
+  // "explicitly unsupported" per this project's own standing principle —
+  // this flag lets a caller say "this style object has at least one
+  // property ReFrame can't see" without needing a name to blame it on.
+  let hasUnsupportedComputedKeys = false;
   for (const prop of expr.properties) {
     if (!t.isObjectProperty(prop)) continue; // skip spreads, methods — not addressable by name
     const keyName = t.isIdentifier(prop.key) ? prop.key.name : t.isStringLiteral(prop.key) ? prop.key.value : null;
-    if (!keyName) continue;
+    if (!keyName) {
+      hasUnsupportedComputedKeys = true;
+      continue;
+    }
     if (!t.isExpression(prop.value)) continue;
     properties.set(keyName, extractStyleProperty(prop.value, prop));
   }
-  return { kind: "object", properties, node: expr };
+  return { kind: "object", properties, node: expr, hasUnsupportedComputedKeys };
 }

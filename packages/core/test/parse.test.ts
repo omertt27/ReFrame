@@ -108,6 +108,43 @@ describe("buildComponentGraph — arrow-function and function-expression compone
     expect(graph.definitions.get("Header")!.isDefaultExport).toBe(false);
   });
 
+  // forwardRef — verified as real via Excalidraw (8/86 files): `const X =
+  // forwardRef((props, ref) => {...})` and `const X = React.forwardRef<T,
+  // P>((props, ref) => {...})`, both real shapes actually used there.
+  it("detects a forwardRef-wrapped component (bare import)", () => {
+    const source = `
+      const FilledButton = forwardRef((props, ref) => {
+        return <button className="FilledButton" ref={ref} />;
+      });
+    `;
+    const graph = buildComponentGraph([{ filePath: "X.tsx", source }]);
+    expect(graph.definitions.has("FilledButton")).toBe(true);
+    expect(nameOf(graph.definitions.get("FilledButton")!.rootElement)).toBe("button");
+  });
+
+  it("detects a forwardRef-wrapped component with generic type arguments (React.forwardRef<T, P>(...))", () => {
+    const source = `
+      const Island = React.forwardRef<HTMLDivElement, IslandProps>((props, ref) => {
+        return <div className="Island" ref={ref} />;
+      });
+    `;
+    const graph = buildComponentGraph([{ filePath: "X.tsx", source }]);
+    expect(graph.definitions.has("Island")).toBe(true);
+  });
+
+  it("detects a forwardRef component with an implicit-return body", () => {
+    const source = `const QuickSearch = React.forwardRef((props, ref) => <input ref={ref} />);`;
+    const graph = buildComponentGraph([{ filePath: "X.tsx", source }]);
+    expect(graph.definitions.has("QuickSearch")).toBe(true);
+    expect(nameOf(graph.definitions.get("QuickSearch")!.rootElement)).toBe("input");
+  });
+
+  it("does not false-positive on an unrelated call wrapping an arrow function", () => {
+    const source = `const Handler = useCallback((props) => { return <div />; }, []);`;
+    const graph = buildComponentGraph([{ filePath: "X.tsx", source }]);
+    expect(graph.definitions.has("Handler")).toBe(false);
+  });
+
   it("registers a usage site for an arrow-const component the same as a FunctionDeclaration one", () => {
     const source = `
       const Card = () => { return <div className="Card" />; };

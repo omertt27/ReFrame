@@ -159,6 +159,57 @@ describe("style IR — color values (hex/rgb/named/CSS-variable, all just a raw 
   });
 });
 
+describe("style IR — computed/bracket property keys are explicitly flagged, not silently dropped", () => {
+  // Found via a real-world comparison against Excalidraw's Card.tsx —
+  // `style={{ ["--card-color" as any]: COLOR_MAP[color].base }}`, used to
+  // set CSS custom properties dynamically. A computed key has no static
+  // name to record it under, so it can never appear in `properties` by
+  // name — but silently vanishing is worse than an explicit "there's
+  // something here ReFrame can't see" (this project's own standing
+  // principle), hence the flag rather than just skipping quietly.
+  it("flags hasUnsupportedComputedKeys and does not crash", () => {
+    // The exact real shape (Excalidraw's Card.tsx): a `key as any` TS cast
+    // wraps the key in a TSAsExpression, not a bare StringLiteral — bracket
+    // notation with a PLAIN string key (`["foo"]: x`, no cast) is actually
+    // already fine today, since the key node is still a StringLiteral
+    // either way; it's specifically the cast that defeats the check.
+    const graph = loadStyled(`
+      export default function X({ color }) {
+        return <div style={{ ["--card-color" as any]: color, ["--card-color-darker" as any]: color }}>x</div>;
+      }
+    `);
+    const def = resolveDefinition(graph, "X");
+    const ir = def.styleAttr!.ir;
+    expect(ir.kind).toBe("object");
+    expect(ir.kind === "object" && ir.hasUnsupportedComputedKeys).toBe(true);
+  });
+
+  it("still parses the OTHER, plain-keyed properties in the same object normally", () => {
+    const graph = loadStyled(`
+      export default function X({ color }) {
+        return <div style={{ ["--card-color" as any]: color, height: 44 }}>x</div>;
+      }
+    `);
+    const def = resolveDefinition(graph, "X");
+    expect(readStyleObjectProperty(def.styleAttr!.ir, height)).toEqual({ available: true, px: 44 });
+  });
+
+  it("bracket notation with a plain string key (no cast) is NOT flagged — the key node is still a StringLiteral", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ ["height"]: 44 }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const ir = def.styleAttr!.ir;
+    expect(ir.kind === "object" && ir.hasUnsupportedComputedKeys).toBe(false);
+    expect(readStyleObjectProperty(ir, height)).toEqual({ available: true, px: 44 });
+  });
+
+  it("leaves the flag false when every key is a plain identifier/string", () => {
+    const graph = loadStyled(`export default function X() { return <div style={{ height: 44 }}>x</div>; }`);
+    const def = resolveDefinition(graph, "X");
+    const ir = def.styleAttr!.ir;
+    expect(ir.kind === "object" && ir.hasUnsupportedComputedKeys).toBe(false);
+  });
+});
+
 describe("real-world regression: PrivaPDF's exact SectionHeader icon wrapper", () => {
   // packages/core/... this mirrors src/app/tools/page.tsx's SectionHeader,
   // found during the real-world stress test — width/height are plain
