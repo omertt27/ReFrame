@@ -9,6 +9,8 @@ export * from "./resolve.js";
 export * from "./mutate/class.js";
 export * from "./mutate/prop.js";
 export * from "./mutate/move.js";
+export * from "./mutate/delete.js";
+export * from "./mutate/duplicate.js";
 export * from "./mutate/tailwind.js";
 export * from "./mutate/style.js";
 export * from "./mutate/text.js";

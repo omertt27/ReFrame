@@ -23,6 +23,14 @@
     fontWeight: "fontWeight",
     lineHeight: "lineHeight",
     letterSpacing: "letterSpacing",
+    fontFamily: "fontFamily",
+    // Not an EDITABLE_PROPERTIES key — element metadata, not a property
+    // value — but computedStyleFor's loop is generic over whatever's in
+    // this map, and this is the cheapest way to get it to the server: CSS
+    // ignores width/height entirely on an inline element, so the server
+    // needs to know the computed display to refuse those two up front
+    // rather than let a doomed-to-fail write happen at all.
+    display: "display",
   };
 
   function computedStyleFor(el) {
@@ -94,7 +102,8 @@
     "[data-reframe-section]{transition:outline-color .1s ease;outline:2px solid transparent;outline-offset:-2px;cursor:grab;}" +
     "[data-reframe-section]:hover{outline-color:rgba(244,163,64,0.55);}" +
     "[data-reframe-section].reframe-dragging{opacity:0.35;cursor:grabbing;}" +
-    "[data-reframe-section].reframe-drop-target{outline-color:#f4a340;outline-width:3px;background-color:rgba(244,163,64,0.06);}";
+    "[data-reframe-section].reframe-drop-target{outline-color:#f4a340;outline-width:3px;background-color:rgba(244,163,64,0.06);}" +
+    ".reframe-hover-outline{outline:1.5px dashed rgba(99,102,241,0.55) !important;outline-offset:-1.5px !important;cursor:pointer !important;}";
   document.head.appendChild(style);
 
   function getFiber(node) {
@@ -151,6 +160,23 @@
     return typeof fiber.type === "string" || typeof fiber.type === "function";
   }
 
+  // React's internal fiber WorkTag numbers for a real, invocable component
+  // (FunctionComponent, ClassComponent, ForwardRef, MemoComponent,
+  // SimpleMemoComponent) — as opposed to a host tag (5), Fragment (7), or a
+  // Context Provider/Consumer (9/10), which a wrapper's OWN implementation
+  // commonly interposes without ever appearing as a literal JSXElement
+  // anywhere. Undocumented, unstable-in-principle React internals, same
+  // trust level this whole file already runs on (_debugOwner/_debugInfo
+  // are no more "public API" than this) — verified against the React
+  // version this session's real test projects (PrivaPDF on React 19,
+  // Excalidraw) both ship. Used only where ownerType has nothing to say
+  // (see the path loop below) — client-owned fibers keep using ownerType,
+  // which needs no version-fragile tag numbers at all.
+  var REAL_COMPONENT_TAGS = { 0: true, 1: true, 11: true, 14: true, 15: true };
+  function isRealComponentFiber(fiber) {
+    return !!REAL_COMPONENT_TAGS[fiber.tag];
+  }
+
   // Name of the function component whose OWN JSX literally created this
   // fiber — React's dev-mode "owner" pointer, distinct from fiber.return
   // (the render tree parent). Only meaningful for client-rendered fibers;
@@ -164,6 +190,38 @@
     var owner = fiber._debugOwner;
     if (!owner || typeof owner.type !== "function") return null;
     return owner.type.name || owner.type.displayName || null;
+  }
+
+  // The raw `_debugOwner.type` reference for a fiber — identifies which
+  // component's render call literally created this JSX, by object identity
+  // rather than by name. Needed alongside ownerName (not instead of it):
+  // ownerName is required wherever a match has to be checked against KNOWN
+  // (a list of source-derived string names), but for just testing "is this
+  // fiber part of the SAME owner as that other fiber," reference identity
+  // is both sufficient and strictly more robust — a `forwardRef`'s own
+  // inner render function is often anonymous with no discoverable name at
+  // all (verified live on Excalidraw's real Island: its inner function has
+  // no name and no displayName, not even one assigned by Fast Refresh's own
+  // wrapping, which renames it to a meaningless "_c"), so a name-based
+  // owner check silently falls back to "no constraint" for every fiber
+  // Island itself authors — wrongly letting Island's own internal wrapper
+  // elements leak into a path meant only for a component ONE LEVEL OUT
+  // (e.g. Toolbar, which authors `<Island>` itself but not what's inside
+  // Island's own render). Reference identity never depends on a name
+  // existing at all.
+  function ownerType(fiber) {
+    var owner = fiber._debugOwner;
+    // Not just `owner ? ... : null` — a Server-Component-authored element
+    // (verified live: PrivaPDF's Home page, a plain Next.js App Router
+    // page/layout) DOES carry a truthy _debugOwner, but shaped like a
+    // debugInfo record ({name, env: "Server", ...}) instead of a real
+    // fiber — `.type` is simply undefined there, not present at all. Only
+    // a REAL client fiber owner has a usable `.type` (function or
+    // forwardRef/memo object); treat anything else as "no owner info",
+    // same as no _debugOwner at all, so callers fall through to the
+    // dedicated Server-Component handling instead of misreading `undefined
+    // !== null` as a real, distinct owner identity.
+    return owner && owner.type ? owner.type : null;
   }
 
   // Index of `fiber` among its parent's element-producing children — the
@@ -196,12 +254,12 @@
   function siblingIndex(fiber) {
     var parent = fiber.return;
     if (!parent) return -1;
-    var wantOwner = ownerName(fiber);
+    var wantOwner = ownerType(fiber);
     var index = 0;
     var cursor = parent.child;
     while (cursor) {
       if (cursor === fiber || cursor === fiber.alternate) return index;
-      if (isElementProducing(cursor) && (wantOwner === null || ownerName(cursor) === wantOwner)) index++;
+      if (isElementProducing(cursor) && (wantOwner === null || ownerType(cursor) === wantOwner)) index++;
       cursor = cursor.sibling;
     }
     return -1;
@@ -214,12 +272,19 @@
   // to the clicked leaf. path: [] means the component's own root was
   // clicked (identical to the old behavior).
   //
-  // Finding that root fiber takes two passes, not one:
+  // Finding that root fiber takes three passes, not one:
+  //  0. Check the clicked leaf's own owner (who authored ITS literal JSX,
+  //     not which ancestor fiber is nearest) against known components
+  //     first. This must run before the nearest-ancestor pass below: a
+  //     children-forwarding wrapper (Island, Card, anything rendering
+  //     `{children}`) can be the nearest ancestor fiber by identity while
+  //     having no literal JSX of its own to resolve a path against — the
+  //     leaf's actual owner is the component whose path CAN be resolved.
   //  1. Walk up collecting the whole ancestor chain, and find the FIRST
   //     fiber (closest to the leaf) that matches a known component, either
   //     by fn identity (a real client-component fiber — exact and final,
   //     no further walking needed) or by _debugInfo (a Server Component
-  //     boundary marker).
+  //     boundary marker). Only reached when pass 0 finds no owner match.
   //  2. For a debugInfo match specifically, keep extending outward through
   //     any consecutive ancestors that carry the SAME debugInfo name. This
   //     is required because that marker is not confined to the literal
@@ -255,41 +320,122 @@
     var anchorIndex = -1;
     var matchedName = null;
     var matchedVia = null;
-    for (var i = 0; i < chain.length; i++) {
-      var fnName = fnMatchName(chain[i], KNOWN);
-      if (fnName) {
-        anchorIndex = i;
-        matchedName = fnName;
-        matchedVia = "fn";
-        break;
-      }
-      var dbName = debugInfoMatchName(chain[i], KNOWN);
-      if (dbName) {
-        anchorIndex = i;
-        matchedName = dbName;
-        matchedVia = "debugInfo";
-        var j = i + 1;
-        while (j < chain.length && debugInfoMatchName(chain[j], KNOWN) === matchedName) {
-          anchorIndex = j;
-          j++;
+
+    // Prefer the OWNER of the clicked leaf itself — the component whose own
+    // JSX literally created this element — over the nearest ancestor fiber
+    // by identity. A children-forwarding wrapper (e.g. Island: renders
+    // `{children}` from its props) can sit closer to the leaf in the render
+    // tree than the component that actually authored the clicked JSX, but
+    // the wrapper's own source has no literal representation of what was
+    // passed to it — anchoring there can never resolve a path past it.
+    // ownerName follows React's dev-mode owner stack, which is set at the
+    // JSX-creation call site and so already skips over any number of such
+    // wrappers regardless of nesting depth. Verified live against
+    // Excalidraw's real Island wrapper: clicks nested inside it always
+    // refused ("can't be edited safely") without this — the actual owning
+    // component (Toolbar) and its literal JSX for the clicked element both
+    // exist, they just weren't the fiber this used to anchor on.
+    var leafOwner = ownerName(chain[0]);
+    if (leafOwner && KNOWN.indexOf(leafOwner) !== -1) {
+      for (var o = 0; o < chain.length; o++) {
+        if (fnMatchName(chain[o], [leafOwner])) {
+          anchorIndex = o;
+          matchedName = leafOwner;
+          matchedVia = "fn";
+          break;
         }
-        break;
+      }
+    }
+
+    if (anchorIndex === -1) {
+      for (var i = 0; i < chain.length; i++) {
+        var fnName = fnMatchName(chain[i], KNOWN);
+        if (fnName) {
+          anchorIndex = i;
+          matchedName = fnName;
+          matchedVia = "fn";
+          break;
+        }
+        var dbName = debugInfoMatchName(chain[i], KNOWN);
+        if (dbName) {
+          anchorIndex = i;
+          matchedName = dbName;
+          matchedVia = "debugInfo";
+          var j = i + 1;
+          while (j < chain.length && debugInfoMatchName(chain[j], KNOWN) === matchedName) {
+            anchorIndex = j;
+            j++;
+          }
+          break;
+        }
       }
     }
     if (anchorIndex === -1) return null;
 
     var rootFiberIndex = matchedVia === "fn" ? anchorIndex - 1 : anchorIndex;
+    // Reference identity, not name — see ownerType's own comment. Only
+    // meaningful for "fn" matches (a real fiber whose .type IS the matched
+    // component); for "debugInfo" matches this is null for every fiber in
+    // that range anyway (ownerType already normalizes a Server-Component
+    // owner record to null), so the comparison below is always a no-op
+    // there — the dedicated "no owner info" branch is what actually
+    // matters for that case.
+    var matchedOwnerType = matchedVia === "fn" ? chain[anchorIndex].type : null;
     var path = [];
+    // Set true the moment the path is redirected to stop at a component
+    // invocation boundary (see below) rather than the exact clicked DOM
+    // leaf — the caller's `elementTag` tag-mismatch safety check compares
+    // against the ORIGINAL clicked DOM tag (e.g. "a"), which is legitimately
+    // different from a component's own JSX source tag name once this
+    // happens (e.g. `<Link>`) and can't be reliably re-derived client-side
+    // (the JSX tag is whatever LOCAL name the source imported it under —
+    // "Link" here — which has no reliable relationship to the component
+    // function's own internal name, e.g. next/link's actual implementation
+    // isn't necessarily named "Link" internally). Skip that check entirely
+    // rather than compare against a guess.
+    var pathHitBoundary = false;
     for (var k = 0; k < rootFiberIndex; k++) {
-      var owner = ownerName(chain[k]);
-      if (owner !== null && owner !== matchedName) continue; // foreign component's own internals, not literal JSX here
+      var oType = ownerType(chain[k]);
+      if (oType !== null) {
+        // Client-owned fiber — trust ownership fully, same as before.
+        if (oType !== matchedOwnerType) continue; // foreign component's own internals, not literal JSX here
+        if (isElementProducing(chain[k])) {
+          var idxOwned = siblingIndex(chain[k]);
+          if (idxOwned >= 0) path.push(idxOwned);
+        }
+        continue;
+      }
+      // No owner info at all — the common case for anything inside a
+      // Server Component's own render (e.g. a Next.js App Router
+      // page/layout: nothing below its debugInfo boundary carries
+      // _debugOwner). Ownership can't answer "is this really part of the
+      // matched component's own JSX" here, but a REAL component
+      // invocation marks the identical kind of boundary: everything BELOW
+      // it (closer to the leaf, walked already) is that component's OWN
+      // internal render — e.g. next/link's `<a>` plus the context
+      // provider it wraps that around — not literal JSX the page wrote.
+      // The component invocation itself (e.g. `<Link style={{...}}>`) IS
+      // real JSX the page wrote directly, so it becomes the new deepest
+      // path point: discard everything collected so far and restart from
+      // here. Verified live against PrivaPDF's real `/` page and its
+      // `<Link href="/convert">` — without this, `<a>` and Link's own
+      // invocation fiber both got indexed as if they were two separate,
+      // literal JSXElements in Home's source, corrupting the path and
+      // making the click resolve to the page's own root instead.
+      if (isRealComponentFiber(chain[k])) {
+        path = [];
+        pathHitBoundary = true;
+        var idxBoundary = siblingIndex(chain[k]);
+        if (idxBoundary >= 0) path.push(idxBoundary);
+        continue;
+      }
       if (isElementProducing(chain[k])) {
         var idx = siblingIndex(chain[k]);
         if (idx >= 0) path.push(idx);
       }
     }
     path.reverse();
-    return { component: matchedName, path: path };
+    return { component: matchedName, path: path, skipTagCheck: pathHitBoundary };
   }
 
   // Finds the outermost DOM element for each name in `names`, walking the
@@ -417,6 +563,37 @@
       setupDragAndDrop();
     });
 
+  // Hover affordance — matching Wix/Canva's "you can see what's clickable
+  // before you click it," which this editor lacked entirely outside the
+  // page-section drag targets above. Reuses resolveClick itself (not a
+  // separate lighter check) so the outline only ever appears where a click
+  // would actually do something — an outline over dead space would be
+  // exactly the "fake affordance" this project's whole philosophy refuses
+  // to ship (see the inline-display resize-handle fix for the same
+  // principle applied elsewhere). Gated on event.target identity so it
+  // only recomputes resolveClick when the hovered DOM node actually
+  // changes, not on every pixel of mousemove within the same element.
+  var lastHoverElement = null;
+  function clearHover() {
+    if (lastHoverElement) {
+      lastHoverElement.classList.remove("reframe-hover-outline");
+      lastHoverElement = null;
+    }
+  }
+  document.addEventListener("mouseover", function (event) {
+    if (event.target === lastHoverElement) return;
+    var resolved = resolveClick(event.target);
+    clearHover();
+    if (resolved) {
+      event.target.classList.add("reframe-hover-outline");
+      lastHoverElement = event.target;
+    }
+  });
+  document.addEventListener("mouseout", function (event) {
+    if (event.target === lastHoverElement) clearHover();
+  });
+  document.documentElement.addEventListener("mouseleave", clearHover);
+
   document.addEventListener(
     "click",
     function (event) {
@@ -432,7 +609,7 @@
           type: "select",
           component: resolved.component,
           path: resolved.path,
-          elementTag: event.target.tagName ? event.target.tagName.toLowerCase() : null,
+          elementTag: resolved.skipTagCheck ? null : event.target.tagName ? event.target.tagName.toLowerCase() : null,
           route: window.location.pathname,
           rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
           computedStyle: computedStyleFor(event.target),
@@ -464,5 +641,146 @@
       { source: "reframe-preload", type: "computed-style-result", requestId: data.requestId, matches: matches, actual: actual },
       "*",
     );
+  });
+
+  // Device-viewport switch: resizing the iframe moves/reflows whatever was
+  // selected, so the host asks for a fresh getBoundingClientRect() on the
+  // SAME DOM node (identity preserved — this isn't a navigation or remount)
+  // rather than re-running fiber resolution from scratch.
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "reframe-get-rect") return;
+    if (!lastSelectedElement || !lastSelectedElement.isConnected) {
+      window.parent.postMessage({ source: "reframe-preload", type: "rect-result", requestId: data.requestId, rect: null }, "*");
+      return;
+    }
+    var r = lastSelectedElement.getBoundingClientRect();
+    window.parent.postMessage(
+      { source: "reframe-preload", type: "rect-result", requestId: data.requestId, rect: { x: r.x, y: r.y, width: r.width, height: r.height } },
+      "*",
+    );
+  });
+
+  // The toolbar's steppers (font size, etc.) need a real starting value
+  // when a property isn't explicitly set on the element at all yet
+  // (inherited from a parent or the browser default) — verified live that
+  // defaulting to 0 there produces exactly the bug this exists to prevent
+  // (a user's real fontSize stepper click wrote `fontSize: 2` to an
+  // element that was actually rendering at 16px, inherited — 0 + 1 + 1,
+  // never what anyone wanted). Reuses computedStyleFor, the SAME reader
+  // already used at selection time, so the reported baseline always
+  // matches what's actually on screen right now.
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "reframe-get-computed") return;
+    if (!lastSelectedElement || !lastSelectedElement.isConnected) {
+      window.parent.postMessage({ source: "reframe-preload", type: "computed-result", requestId: data.requestId, computed: null }, "*");
+      return;
+    }
+    window.parent.postMessage(
+      { source: "reframe-preload", type: "computed-result", requestId: data.requestId, computed: computedStyleFor(lastSelectedElement) },
+      "*",
+    );
+  });
+
+  // Live drag-resize preview: the host page drags a handle on its own
+  // overlay (drawn from the `rect` sent above) and streams the in-progress
+  // size here on every pointermove, purely visual — nothing is written to
+  // source until the drag ends and the host's own mutate() call fires,
+  // exactly the same write path a manually-typed number in the sidebar
+  // uses. `!important` makes the preview win regardless of whatever
+  // backend (Tailwind class or inline style) actually controls this
+  // property, matching this model's "browser is ground truth, don't guess
+  // why a value applies" stance elsewhere. The pre-drag inline value (which
+  // may be empty, if this property isn't set inline at all yet) is
+  // captured on the FIRST preview of a given drag and restored verbatim on
+  // clear — never a blind `removeProperty`, which would erase a real
+  // author-set inline value that just happened to already be there.
+  var previewOriginal = {};
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || !lastSelectedElement) return;
+    if (data.type === "reframe-preview-style") {
+      var cssProp = COMPUTED_STYLE_KEYS[data.property] || data.property;
+      if (!(data.property in previewOriginal)) {
+        previewOriginal[data.property] = lastSelectedElement.style.getPropertyValue(cssProp);
+      }
+      lastSelectedElement.style.setProperty(cssProp, data.px + "px", "important");
+    } else if (data.type === "reframe-preview-clear") {
+      Object.keys(previewOriginal).forEach(function (property) {
+        var cssProp = COMPUTED_STYLE_KEYS[property] || property;
+        var original = previewOriginal[property];
+        if (original) {
+          lastSelectedElement.style.setProperty(cssProp, original);
+        } else {
+          lastSelectedElement.style.removeProperty(cssProp);
+        }
+      });
+      previewOriginal = {};
+    }
+  });
+
+  // Direct on-canvas text editing: type directly into the real rendered
+  // text instead of only through a separate textarea popup. Gated to a
+  // plain single text-node leaf (mirrors text-ir.ts's own "single
+  // text-leaf elements" boundary) — contentEditable lets a user insert
+  // arbitrary markup, which would corrupt the JSX/DOM relationship for
+  // anything with nested elements; refusing silently here (never entering
+  // edit mode) is consistent with "unsupported is acceptable" rather than
+  // letting them edit something the write path would just reject anyway.
+  // Two triggers share this: double-clicking the element directly, and the
+  // host's own toolbar "Edit text" button (a postMessage — the toolbar
+  // lives in the PARENT document, it has no direct DOM access to reach in
+  // here and call this itself).
+  function enterInlineTextEdit(el) {
+    if (el.childNodes.length !== 1 || el.childNodes[0].nodeType !== 3) return false;
+
+    var originalText = el.textContent;
+    el.setAttribute("contenteditable", "true");
+    el.focus();
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    function cleanup() {
+      el.removeAttribute("contenteditable");
+      el.removeEventListener("blur", commit);
+      el.removeEventListener("keydown", onKeydown);
+    }
+    function commit() {
+      var changed = el.textContent !== originalText;
+      cleanup();
+      if (changed) {
+        window.parent.postMessage({ source: "reframe-preload", type: "inline-text-committed", value: el.textContent }, "*");
+      }
+    }
+    function onKeydown(e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        el.blur(); // fires commit via the blur listener below
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        el.textContent = originalText;
+        cleanup();
+      }
+    }
+    el.addEventListener("blur", commit);
+    el.addEventListener("keydown", onKeydown);
+    return true;
+  }
+
+  document.addEventListener("dblclick", function (event) {
+    if (event.target !== lastSelectedElement) return;
+    event.preventDefault();
+    enterInlineTextEdit(event.target);
+  });
+
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "reframe-enter-text-edit") return;
+    if (!lastSelectedElement || !lastSelectedElement.isConnected) return;
+    enterInlineTextEdit(lastSelectedElement);
   });
 })();

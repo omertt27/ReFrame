@@ -44,7 +44,7 @@ describe("style IR — unsupported shapes, reported not guessed", () => {
     const def = resolveDefinition(graph, "X");
     const dimensionRead = readStyleObjectProperty(def.styleAttr!.ir, background);
     expect(dimensionRead.available).toBe(false);
-    expect(!dimensionRead.available && dimensionRead.reason).toMatch(/color/);
+    expect(!dimensionRead.available && dimensionRead.reason).toMatch(/non-numeric/);
 
     const colorRead = readStyleObjectColor(def.styleAttr!.ir, background);
     expect(colorRead).toEqual({ available: true, value: "var(--accent-light)" });

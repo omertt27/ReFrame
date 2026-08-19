@@ -61,16 +61,301 @@
         background: #111113;
         border-right: 1px solid #222;
         padding: 12px;
+        transition: width 0.15s ease;
+      }
+      #tree.collapsed {
+        width: 40px;
+        padding: 12px 8px;
+        overflow: hidden;
+      }
+      #tree.collapsed #tree-body {
+        display: none;
+      }
+      #tree.collapsed .panel-header h2 {
+        display: none;
+      }
+      .panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+      }
+      .panel-header h2 {
+        margin: 0 0 10px;
+      }
+      .panel-toggle {
+        flex: none;
+        background: none;
+        border: 1px solid #2a2a2e;
+        color: #8a8a90;
+        border-radius: 5px;
+        width: 22px;
+        height: 22px;
+        line-height: 1;
+        cursor: pointer;
+        margin-bottom: 10px;
+        font-size: 13px;
+      }
+      .panel-toggle:hover {
+        color: #f5f5f5;
+        border-color: #444;
       }
       #canvas {
         flex: 1;
         min-width: 0;
         display: flex;
+        flex-direction: column;
+      }
+      #viewport-switcher {
+        flex: none;
+        display: flex;
+        justify-content: center;
+        gap: 4px;
+        padding: 8px;
+        background: #111113;
+        border-bottom: 1px solid #222;
+      }
+      .viewport-btn {
+        background: none;
+        border: 1px solid transparent;
+        color: #8a8a90;
+        border-radius: 6px;
+        padding: 5px 12px;
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .viewport-btn:hover {
+        color: #d0d0d3;
+        background: #1a1a1d;
+      }
+      .viewport-btn.active {
+        color: #f5f5f5;
+        background: #1c1c1f;
+        border-color: #333;
+      }
+      /* Fills #canvas below the switcher; scrolls both axes when a fixed
+         device frame is taller/narrower than the available space,
+         matching a real devtools-style device preview — the iframe
+         renders at the device's TRUE pixel width, never a scaled-down
+         visual approximation, so CSS media queries inside it evaluate
+         exactly as they would on a real device that size. This applies to
+         "Desktop" too, not just Tablet/Mobile — it's a fixed 1440px
+         frame, not "whatever's left of the browser window" (that was
+         this file's own first-draft assumption, not what accurate
+         responsive editing needs: readResponsiveProperty's cascade math
+         in packages/core assumes a specific reference width per tier,
+         and a fluid desktop width silently disagreed with it — caught
+         live by the external-CSS safety net reporting a real mismatch
+         between the predicted and actually-rendered value at desktop
+         width, exactly the kind of bug that check exists to catch). */
+      #canvas-frame-wrap {
+        flex: 1;
+        min-height: 0;
+        position: relative;
+        overflow: auto;
+        display: flex;
+        /* NOT centered: `justify-content:center` on an overflowing flex
+           container makes the browser's own overflow/scroll-anchoring
+           put the frame's left edge at a NEGATIVE scroll position by
+           default (verified live: getBoundingClientRect().x was -50 with
+           scrollLeft at its default 0) — surprising and hard to reason
+           about. Left-aligned means scrollLeft:0 always means exactly
+           "the device frame's own left edge," simple and predictable,
+           same as how a real devtools device-preview pane behaves (it
+           doesn't center a fixed-width frame either). */
+        justify-content: flex-start;
+        background: #0b0b0d;
       }
       iframe {
-        flex: 1;
+        flex: none;
+        width: 1440px;
+        height: 100%;
         border: 0;
         background: #fff;
+      }
+      #canvas-frame-wrap.viewport-tablet iframe {
+        width: 768px;
+        height: 1024px;
+        margin-top: 16px;
+        box-shadow: 0 0 0 1px #222;
+      }
+      #canvas-frame-wrap.viewport-mobile iframe {
+        width: 390px;
+        height: 844px;
+        margin-top: 16px;
+        box-shadow: 0 0 0 1px #222;
+      }
+      /* Positioned directly over the selected element, in the SAME
+         viewport coordinate space #canvas's other absolute children use
+         (canvas's own top-left, i.e. the iframe's top-left since the
+         iframe is #canvas's only flex child) — see updateSelectionOverlay.
+         pointer-events:none on the outline itself so it never blocks
+         clicking through to the real page underneath; only the handles
+         are interactive. */
+      #selection-overlay {
+        position: absolute;
+        border: 1.5px solid #6366f1;
+        pointer-events: none;
+        box-sizing: border-box;
+        display: none;
+      }
+      /* Round, white-filled handle with a colored ring — every handle
+         rendered is a REAL, working drag target (right edge = width,
+         bottom edge = height, corner = both); none are decorative. A
+         handle that looks draggable but silently does nothing on release
+         would be its own small silent-failure, the exact thing this
+         project's whole editing model refuses to do elsewhere. */
+      .reframe-handle {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        background: #fff;
+        border: 2px solid #6366f1;
+        border-radius: 50%;
+        pointer-events: auto;
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+      }
+      .handle-e {
+        right: -6px;
+        top: 50%;
+        margin-top: -6px;
+        cursor: ew-resize;
+      }
+      .handle-s {
+        bottom: -6px;
+        left: 50%;
+        margin-left: -6px;
+        cursor: ns-resize;
+      }
+      .handle-se {
+        right: -6px;
+        bottom: -6px;
+        cursor: nwse-resize;
+      }
+      /* Follows the selected element (repositioned in updateCanvasToolbar,
+         called whenever a new selection resolves) — the primary way to
+         edit becomes "click element, click a button right next to it,"
+         not "click element, look across the screen at a side panel." The
+         side panel stays as the full/advanced inspector, not the main
+         interaction surface. */
+      #canvas-toolbar {
+        position: absolute;
+        display: none;
+        gap: 2px;
+        background: #1c1c1f;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 3px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        z-index: 5;
+      }
+      .toolbar-btn {
+        background: none;
+        border: none;
+        color: #d0d0d3;
+        border-radius: 5px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        white-space: nowrap;
+      }
+      .toolbar-btn:hover {
+        background: #2a2a2e;
+        color: #fff;
+      }
+      .toolbar-btn.active {
+        background: rgba(99, 102, 241, 0.2);
+        color: #a5a8f7;
+      }
+      .toolbar-btn .icon {
+        font-size: 13px;
+      }
+      .toolbar-btn-delete {
+        margin-left: 4px;
+        padding-left: 8px;
+        border-left: 1px solid #333;
+        color: #b0b0b4;
+      }
+      .toolbar-btn-delete:hover {
+        background: rgba(239, 68, 68, 0.15);
+        color: #f87171;
+      }
+      .toolbar-sep {
+        width: 1px;
+        align-self: stretch;
+        background: #333;
+        margin: 3px 2px;
+      }
+      /* The most-reached-for control (font size) shown directly in the
+         toolbar, not behind a button-then-popup step — the whole point of
+         this redesign: one click to CHANGE something, not one click to
+         reveal the control and a second to use it. */
+      .toolbar-stepper {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 0 2px;
+      }
+      .stepper-btn {
+        background: none;
+        border: none;
+        color: #d0d0d3;
+        width: 20px;
+        height: 24px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+      }
+      .stepper-btn:hover {
+        background: #2a2a2e;
+        color: #fff;
+      }
+      .stepper-value {
+        font-size: 12px;
+        color: #f5f5f5;
+        min-width: 26px;
+        text-align: center;
+      }
+      /* A round color preview, not an icon+label — clicking it opens a
+         one-field popup directly (no "Color" group button in between). */
+      .toolbar-swatch {
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        border: 1.5px solid #444;
+        cursor: pointer;
+        padding: 0;
+        flex: none;
+      }
+      .toolbar-swatch:hover {
+        border-color: #888;
+      }
+      .toolbar-swatch.empty {
+        background: repeating-conic-gradient(#2a2a2e 0% 25%, #1c1c1f 0% 50%) 50% / 8px 8px;
+      }
+      .toolbar-swatch.active {
+        border-color: #a5a8f7;
+      }
+      #canvas-popup {
+        position: absolute;
+        display: none;
+        width: 240px;
+        background: #17171a;
+        border: 1px solid #2a2a2e;
+        border-radius: 10px;
+        padding: 14px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        z-index: 6;
+      }
+      #canvas-popup .field:last-child {
+        margin-bottom: 0;
       }
       #properties {
         width: 320px;
@@ -79,6 +364,18 @@
         background: #111113;
         border-left: 1px solid #222;
         padding: 16px;
+        transition: width 0.15s ease;
+      }
+      #properties.collapsed {
+        width: 40px;
+        padding: 12px 8px;
+        overflow: hidden;
+      }
+      #properties.collapsed .panel-content {
+        display: none;
+      }
+      #properties.collapsed .panel-header h2 {
+        display: none;
       }
       h2 {
         font-size: 11px;
@@ -90,11 +387,47 @@
       .page-group {
         margin-bottom: 14px;
       }
+      .page-item {
+        margin-bottom: 2px;
+      }
+      .group-label {
+        font-size: 13px;
+        font-weight: 600;
+        padding: 4px 6px;
+        border-radius: 6px;
+        color: #d0d0d3;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .group-label:hover {
+        background: #1a1a1d;
+        color: #f5f5f5;
+      }
+      .group-arrow {
+        font-size: 10px;
+        color: #6b6b70;
+        width: 10px;
+      }
+      .group-children {
+        padding-left: 12px;
+      }
       .page-label {
         font-size: 13px;
         font-weight: 600;
         padding: 4px 6px;
+        border-radius: 6px;
         color: #d0d0d3;
+        cursor: pointer;
+      }
+      .page-label:hover {
+        background: #1a1a1d;
+        color: #f5f5f5;
+      }
+      .page-label.active {
+        background: rgba(244, 163, 64, 0.12);
+        color: #f4a340;
       }
       .section-row {
         padding: 5px 6px 5px 20px;
@@ -159,6 +492,46 @@
         color: #55555a;
         cursor: default;
       }
+      .prop-group {
+        margin-bottom: 18px;
+        padding-bottom: 4px;
+        border-bottom: 1px solid #1c1c1f;
+      }
+      .prop-group-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #6b6b70;
+        margin-bottom: 10px;
+      }
+      .advanced {
+        margin-top: 22px;
+        border-top: 1px solid #1c1c1f;
+        padding-top: 10px;
+      }
+      .advanced summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: #8a8a90;
+        list-style: none;
+      }
+      .advanced summary::-webkit-details-marker {
+        display: none;
+      }
+      .advanced summary::before {
+        content: "▸ ";
+        color: #6b6b70;
+      }
+      .advanced[open] summary::before {
+        content: "▾ ";
+      }
+      .advanced summary:hover {
+        color: #d0d0d3;
+      }
+      .advanced .selection-title {
+        margin-top: 12px;
+        font-size: 13px;
+      }
       .field {
         margin-bottom: 14px;
       }
@@ -200,6 +573,77 @@
         color: #6b6b70;
         margin-top: 4px;
       }
+      .color-input-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .color-input-row input[type="color"] {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border: 1px solid #2a2a2e;
+        border-radius: 6px;
+        background: none;
+        cursor: pointer;
+        flex: none;
+      }
+      .color-input-row input[type="color"]:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .color-input-row input[type="text"] {
+        flex: 1;
+        min-width: 0;
+      }
+      .color-input-row select.font-preset-select {
+        flex: none;
+        width: 90px;
+        background: #0b0b0d;
+        border: 1px solid #2a2a2e;
+        color: #f5f5f5;
+        border-radius: 6px;
+        padding: 8px 4px;
+        font-size: 12px;
+      }
+      .color-input-row select.font-preset-select:disabled {
+        opacity: 0.35;
+      }
+      .recent-colors {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .recent-color-swatch {
+        width: 18px;
+        height: 18px;
+        border-radius: 4px;
+        border: 1px solid #2a2a2e;
+        padding: 0;
+        cursor: pointer;
+      }
+      .recent-color-swatch:hover {
+        border-color: #6366f1;
+      }
+      .number-input-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .number-input-row input[type="number"] {
+        flex: 1;
+        min-width: 0;
+      }
+      .number-input-row .stepper-btn {
+        border: 1px solid #2a2a2e;
+        background: #0b0b0d;
+        flex: none;
+      }
+      .number-input-row .stepper-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
       pre {
         white-space: pre-wrap;
         word-break: break-word;
@@ -235,7 +679,10 @@
   <body>
     <div class="app">
       <header>
-        <span>ReFrame</span>
+        <svg class="logo" viewBox="0 0 100 100" width="22" height="22" fill="none" aria-label="ReFrame">
+          <path d="M10,38 L10,10 L38,10" stroke="#f4a340" stroke-width="10" stroke-linecap="square"/>
+          <path d="M62,90 L90,90 L90,62" stroke="#f4a340" stroke-width="10" stroke-linecap="square"/>
+        </svg>
         <div class="undo-controls">
           <button id="btn-undo" disabled title="Cmd/Ctrl+Z">Undo</button>
           <button id="btn-redo" disabled title="Cmd/Ctrl+Shift+Z">Redo</button>
@@ -243,22 +690,40 @@
       </header>
       <div class="layout">
         <div id="tree">
-          <h2>Pages</h2>
+          <div class="panel-header"><h2>Pages</h2><button class="panel-toggle" data-panel="tree" title="Collapse">‹</button></div>
           <div id="tree-body"></div>
         </div>
         <div id="canvas">
-          <iframe id="target" src="__PROXY_URL__"></iframe>
+          <div id="viewport-switcher">
+            <button class="viewport-btn active" data-viewport="desktop" title="Desktop (fills available space)">
+              <span class="icon">🖥</span>Desktop
+            </button>
+            <button class="viewport-btn" data-viewport="tablet" title="Tablet (768px)"><span class="icon">▣</span>Tablet</button>
+            <button class="viewport-btn" data-viewport="mobile" title="Mobile (390px)"><span class="icon">📱</span>Mobile</button>
+          </div>
+          <div id="canvas-frame-wrap">
+            <iframe id="target" src="__PROXY_URL__"></iframe>
+            <div id="selection-overlay">
+              <div class="reframe-handle handle-e" data-handle="e" title="Drag to resize width"></div>
+              <div class="reframe-handle handle-s" data-handle="s" title="Drag to resize height"></div>
+              <div class="reframe-handle handle-se" data-handle="se" title="Drag to resize"></div>
+            </div>
+            <div id="canvas-toolbar"></div>
+            <div id="canvas-popup"></div>
+          </div>
         </div>
         <div id="properties">
-          <h2>Properties</h2>
-          <div id="properties-body">
-            <div class="empty">Click something in the canvas, or select it from Pages.</div>
-          </div>
-          <h2 style="margin-top: 24px">Last diff</h2>
-          <pre id="diff">(no edit yet)</pre>
-          <h2 style="margin-top: 24px">Changes</h2>
-          <div id="changes-body">
-            <div class="empty">No edits yet.</div>
+          <div class="panel-header"><button class="panel-toggle" data-panel="properties" title="Collapse">›</button><h2>Properties</h2></div>
+          <div class="panel-content">
+            <div id="properties-body">
+              <div class="empty">Click something in the canvas, or select it from Pages.</div>
+            </div>
+            <h2 style="margin-top: 24px">Last diff</h2>
+            <pre id="diff">(no edit yet)</pre>
+            <h2 style="margin-top: 24px">Changes</h2>
+            <div id="changes-body">
+              <div class="empty">No edits yet.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -268,32 +733,259 @@
       var current = null; // { component, route, usageCount, kind, availableInstance }
       var scope = "all";
 
+      // Direct on-canvas resize: the overlay + its 3 handles track the
+      // selected element's rect (sent alongside every `select` message);
+      // dragging streams a live, purely visual preview into the target
+      // page via postMessage (preload.js applies it as a temporary
+      // !important inline override, restored on release) and commits
+      // through the SAME mutate() a manually-typed sidebar number uses —
+      // one write, one diff, one undo step, on mouseup. Known simplification:
+      // the overlay's rect is a snapshot from selection time and doesn't
+      // track iframe scroll/in-app navigation — acceptable for v1, matches
+      // this model's existing "approximate, never guess at a write" bar
+      // (the write itself always uses the real, freshly-computed value,
+      // only the on-screen handle position can go stale).
+      var lastRect = null;
+      var dragState = null;
+      var currentViewport = "desktop";
+
+      // Switching device tier resizes the iframe to the device's TRUE
+      // pixel width/height (never a scaled visual approximation, so CSS
+      // media queries inside it evaluate exactly as a real device that
+      // size would) and re-resolves whatever's currently selected — the
+      // EFFECTIVE value of a responsive Tailwind property genuinely
+      // differs per tier (see packages/core's readResponsiveProperty), so
+      // the panel has to ask again, not just relabel what it already has.
+      // computedStyle is deliberately omitted on this re-resolve — the
+      // value captured at the OLD viewport width would produce a false
+      // mismatch warning against the NEW one; same precedent as the
+      // existing post-undo/redo re-resolve below, which never had a live
+      // computedStyle to send either.
+      Array.prototype.forEach.call(document.querySelectorAll(".viewport-btn"), function (btn) {
+        btn.addEventListener("click", function () {
+          var tier = btn.getAttribute("data-viewport");
+          if (tier === currentViewport) return;
+          currentViewport = tier;
+          Array.prototype.forEach.call(document.querySelectorAll(".viewport-btn"), function (b) {
+            b.classList.toggle("active", b === btn);
+          });
+          var wrap = document.getElementById("canvas-frame-wrap");
+          wrap.classList.remove("viewport-tablet", "viewport-mobile");
+          if (tier === "tablet") wrap.classList.add("viewport-tablet");
+          if (tier === "mobile") wrap.classList.add("viewport-mobile");
+
+          closeCanvasToolbar();
+          if (!current) return;
+          // Give the iframe a moment to actually reflow at its new size
+          // before asking for a fresh rect.
+          setTimeout(function () {
+            requestFreshRect().then(function (rect) {
+              updateSelectionOverlay(rect);
+              resolveSelection(current.component, current.route, current.path);
+            });
+          }, 60);
+        });
+      });
+
+      // `rect` (from preload.js) is always IFRAME-viewport-relative. Every
+      // absolutely-positioned overlay element lives in #canvas-frame-wrap,
+      // not directly against the iframe's own top-left — true once the
+      // device-preview modes exist at all (a centered, narrower-than-its-
+      // container tablet/mobile frame has a real horizontal offset), and
+      // more correct in desktop mode too even though that offset happens
+      // to be zero there. Added to every rect coordinate before using it
+      // for positioning, never for sizing (width/height need no offset).
+      function iframeOffset() {
+        var iframe = document.getElementById("target");
+        var wrap = document.getElementById("canvas-frame-wrap");
+        var iframeRect = iframe.getBoundingClientRect();
+        var wrapRect = wrap.getBoundingClientRect();
+        return { x: iframeRect.left - wrapRect.left, y: iframeRect.top - wrapRect.top };
+      }
+
+      function updateSelectionOverlay(rect) {
+        var overlay = document.getElementById("selection-overlay");
+        if (!rect) {
+          overlay.style.display = "none";
+          lastRect = null;
+          return;
+        }
+        lastRect = rect;
+        var offset = iframeOffset();
+        overlay.style.left = rect.x + offset.x + "px";
+        overlay.style.top = rect.y + offset.y + "px";
+        overlay.style.width = rect.width + "px";
+        overlay.style.height = rect.height + "px";
+        overlay.style.display = "block";
+      }
+
+      function propAvailable(key) {
+        return !!(
+          current &&
+          current.properties &&
+          current.properties.editable &&
+          current.properties.values[key] &&
+          current.properties.values[key].available
+        );
+      }
+
+      function propBackend(key) {
+        return current && current.properties && current.properties.values[key] ? current.properties.values[key].backend : undefined;
+      }
+
+      function postToFrame(msg) {
+        var iframe = document.getElementById("target");
+        if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage(msg, "*");
+      }
+
+      function updateFieldValue(property, px) {
+        var input = document.querySelector('input[data-property="' + property + '"]');
+        if (input) input.value = px;
+      }
+
+      function handleInvolves(handle, axis) {
+        if (axis === "width") return handle === "e" || handle === "se";
+        return handle === "s" || handle === "se";
+      }
+
+      function startDrag(handleType, event) {
+        if (!lastRect || !current) return;
+        var wantsWidth = handleInvolves(handleType, "width") && propAvailable("width");
+        var wantsHeight = handleInvolves(handleType, "height") && propAvailable("height");
+        if (!wantsWidth && !wantsHeight) return; // neither axis this handle touches is editable here
+        dragState = {
+          handle: handleType,
+          startX: event.clientX,
+          startY: event.clientY,
+          startWidth: lastRect.width,
+          startHeight: lastRect.height,
+          wantsWidth: wantsWidth,
+          wantsHeight: wantsHeight,
+        };
+        event.preventDefault();
+        // The moment the cursor crosses over the iframe's own rendered
+        // area mid-drag, mousemove stops reaching this document's listener
+        // — an iframe is a separate browsing context, so the browser
+        // routes pointer events into ITS document instead of bubbling them
+        // to the parent. Disabling pointer-events on the iframe for the
+        // duration of the drag keeps every move event on this page, where
+        // the drag logic actually lives; restored in onDragEnd regardless
+        // of how the drag ends.
+        document.getElementById("target").style.pointerEvents = "none";
+        document.addEventListener("mousemove", onDragMove);
+        document.addEventListener("mouseup", onDragEnd);
+      }
+
+      function onDragMove(event) {
+        if (!dragState) return;
+        var dx = event.clientX - dragState.startX;
+        var dy = event.clientY - dragState.startY;
+        var overlay = document.getElementById("selection-overlay");
+        if (dragState.wantsWidth) {
+          dragState.currentWidth = Math.max(4, Math.round(dragState.startWidth + dx));
+          overlay.style.width = dragState.currentWidth + "px";
+          postToFrame({ type: "reframe-preview-style", property: "width", px: dragState.currentWidth });
+        }
+        if (dragState.wantsHeight) {
+          dragState.currentHeight = Math.max(4, Math.round(dragState.startHeight + dy));
+          overlay.style.height = dragState.currentHeight + "px";
+          postToFrame({ type: "reframe-preview-style", property: "height", px: dragState.currentHeight });
+        }
+      }
+
+      function onDragEnd() {
+        if (!dragState) return;
+        document.removeEventListener("mousemove", onDragMove);
+        document.removeEventListener("mouseup", onDragEnd);
+        document.getElementById("target").style.pointerEvents = "";
+        postToFrame({ type: "reframe-preview-clear" });
+
+        if (dragState.wantsWidth && dragState.currentWidth !== undefined && dragState.currentWidth !== dragState.startWidth) {
+          mutate("width", dragState.currentWidth, propBackend("width"));
+          updateFieldValue("width", dragState.currentWidth);
+        }
+        if (dragState.wantsHeight && dragState.currentHeight !== undefined && dragState.currentHeight !== dragState.startHeight) {
+          mutate("height", dragState.currentHeight, propBackend("height"));
+          updateFieldValue("height", dragState.currentHeight);
+        }
+        dragState = null;
+      }
+
+      // One page node — a real route, plus whatever named top-level
+      // sections it composes from (rare in practice: verified live that
+      // only 1 of ~50 real PrivaPDF routes had any).
+      function renderPageNode(p) {
+        var sections = p.sections
+          .map(function (name) {
+            return '<div class="section-row" data-route="' + p.route + '" data-component="' + name + '">' + name + "</div>";
+          })
+          .join("");
+        return (
+          '<div class="page-item"><div class="page-label" data-route="' +
+          p.route +
+          '" data-component="' +
+          p.pageComponent +
+          '" title="' +
+          p.route +
+          '">' +
+          p.label +
+          "</div>" +
+          sections +
+          "</div>"
+        );
+      }
+
+      // A group exists ONLY because 2+ real routes share a first path
+      // segment (see host.ts's buildPageTree) — never a hand-authored
+      // second hierarchy. Collapsed by default: a project can have dozens
+      // of pages under one segment (verified live: PrivaPDF's real
+      // /guides/* alone is 30+ pages) and showing all of them open by
+      // default would defeat the point of grouping them at all.
+      function renderGroupNode(g) {
+        return (
+          '<div class="page-group"><div class="group-label"><span class="group-arrow">▸</span>' +
+          g.label +
+          "</div>" +
+          '<div class="group-children" style="display: none">' +
+          g.children.map(renderPageNode).join("") +
+          "</div></div>"
+        );
+      }
+
       function loadTree() {
         fetch("/__reframe/tree")
           .then(function (r) {
             return r.json();
           })
-          .then(function (pages) {
+          .then(function (nodes) {
             var body = document.getElementById("tree-body");
-            body.innerHTML = pages
-              .map(function (p) {
-                var sections = p.sections
-                  .map(function (name) {
-                    return (
-                      '<div class="section-row" data-route="' +
-                      p.route +
-                      '" data-component="' +
-                      name +
-                      '">' +
-                      name +
-                      "</div>"
-                    );
-                  })
-                  .join("");
-                return '<div class="page-group"><div class="page-label">' + p.label + "</div>" + sections + "</div>";
+            body.innerHTML = nodes
+              .map(function (n) {
+                return n.kind === "group" ? renderGroupNode(n) : renderPageNode(n);
               })
               .join("");
 
+            Array.prototype.forEach.call(body.querySelectorAll(".group-label"), function (el) {
+              el.addEventListener("click", function () {
+                var children = el.nextElementSibling;
+                var open = children.style.display !== "none";
+                children.style.display = open ? "none" : "block";
+                el.querySelector(".group-arrow").textContent = open ? "▸" : "▾";
+              });
+            });
+            // The page label itself navigates to that page and selects its
+            // own root component — previously only the .section-row
+            // entries (top-level named sub-components a page happens to
+            // compose from) were clickable at all, and most real pages
+            // have none: a page written as one big function has zero
+            // sections, leaving nothing in this list to click. Verified
+            // live against PrivaPDF's real Pages list: only "Convert" had
+            // any section-row at all among ~25 real routes.
+            Array.prototype.forEach.call(body.querySelectorAll(".page-label"), function (el) {
+              el.addEventListener("click", function () {
+                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"));
+              });
+            });
             Array.prototype.forEach.call(body.querySelectorAll(".section-row"), function (el) {
               el.addEventListener("click", function () {
                 selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"));
@@ -304,9 +996,14 @@
 
       function selectFromTree(route, component) {
         var iframe = document.getElementById("target");
-        Array.prototype.forEach.call(document.querySelectorAll(".section-row"), function (el) {
+        Array.prototype.forEach.call(document.querySelectorAll(".section-row, .page-label"), function (el) {
           el.classList.toggle("active", el.getAttribute("data-route") === route && el.getAttribute("data-component") === component);
         });
+        // A Pages-tree selection has no click rect at all — clear any rect
+        // left over from a previous canvas click so updateCanvasToolbar
+        // (called once resolve completes) correctly hides the toolbar
+        // rather than anchoring it to a stale, now-unrelated position.
+        updateSelectionOverlay(null);
 
         var proxyOrigin = new URL(iframe.src).origin;
         var currentPath = new URL(iframe.src).pathname;
@@ -340,6 +1037,7 @@
             path: path || [],
             elementTag: elementTag || null,
             computedStyle: computedStyle || null,
+            viewport: currentViewport,
           }),
         })
           .then(function (r) {
@@ -355,29 +1053,78 @@
           });
       }
 
+      // Which real backend an edit lands in (a Tailwind utility class vs an
+      // inline style, decided per-property server-side) is real, useful
+      // information — just not the FIRST thing a "click it, change it"
+      // editor should show. It's on the label as a native tooltip (hover
+      // to see it) instead of printed inline, matching the "ReFrame decides
+      // the write, the user shouldn't have to think about it" framing —
+      // still fully visible on demand, never hidden from someone who wants
+      // it, just not competing with the value for attention by default.
+      // Per-key stepper granularity — a plain "always step by 1" default
+      // is wrong for fontWeight (100-900 in hundreds) and actively
+      // destructive for lineHeight/letterSpacing, which are commonly small
+      // fractional values (e.g. line-height: 1.2) where a step of 1 would
+      // blow past every meaningful value in one click.
+      var STEP_CONFIG = {
+        fontWeight: { step: 100, min: 100, max: 900, precision: 0 },
+        lineHeight: { step: 0.1, min: 0, precision: 2 },
+        letterSpacing: { step: 0.5, precision: 2 },
+      };
+      function stepConfigFor(key) {
+        return STEP_CONFIG[key] || { step: 1, min: 0, precision: 0 };
+      }
+
+      // A number field with +/- stepper buttons flanking it, not a bare
+      // <input type=number> — matches the fontSize stepper already proven
+      // in the floating toolbar (see stepFontSize), generalized to every
+      // dimension field so "click to change it" doesn't stop being true
+      // just because a control lives in the side panel or a popup instead
+      // of the toolbar. The number itself stays directly editable too, for
+      // anyone who wants to type an exact value.
       function propertyField(key, label, prop) {
         var disabled = !prop || !prop.available;
         var value = prop && prop.available && prop.px !== null ? prop.px : "";
-        var note = !prop || prop.available ? "" : '<div class="unavailable">' + prop.reason + "</div>";
-        // Backend is shown next to the label — transparency about which
-        // representation (Tailwind vs inline style) an edit will land in,
-        // never silently rewritten from what the author already chose.
-        var backendLabel = prop && prop.backend ? " · " + prop.backend : "";
+        var note = !prop || prop.available ? "" : '<div class="unavailable">' + humanizeReason(prop.reason) + "</div>";
+        // The viewport tier only means anything for a Tailwind-backed field
+        // — an inline style has no responsive variant, so it always shows
+        // the same single value regardless of which device tab is active.
+        var tierNote = prop && prop.backend === "tailwind" && currentViewport !== "desktop" ? " · " + currentViewport : "";
+        var titleAttr = prop && prop.backend ? ' title="Writes to: ' + prop.backend + tierNote + '"' : "";
+        var cfg = stepConfigFor(key);
         return (
           '<div class="field">' +
-          "<label>" +
+          "<label" +
+          titleAttr +
+          ">" +
           label +
-          backendLabel +
           "</label>" +
+          '<div class="number-input-row">' +
+          '<button type="button" class="stepper-btn" data-step-for="' +
+          key +
+          '" data-step-dir="-1" ' +
+          (disabled ? "disabled" : "") +
+          ">–</button>" +
           '<input type="number" data-property="' +
           key +
           '" data-backend="' +
           (prop && prop.backend ? prop.backend : "") +
-          '" value="' +
+          '" step="' +
+          cfg.step +
+          '"' +
+          (cfg.min !== undefined && cfg.min !== null ? ' min="' + cfg.min + '"' : "") +
+          (cfg.max !== undefined && cfg.max !== null ? ' max="' + cfg.max + '"' : "") +
+          ' value="' +
           value +
           '" placeholder="—" ' +
           (disabled ? "disabled" : "") +
           " />" +
+          '<button type="button" class="stepper-btn" data-step-for="' +
+          key +
+          '" data-step-dir="1" ' +
+          (disabled ? "disabled" : "") +
+          ">+</button>" +
+          "</div>" +
           note +
           "</div>"
         );
@@ -387,6 +1134,40 @@
         return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
       }
 
+      // The server's "reason" strings are deliberately specific and honest
+      // — real engineering documentation, useful in Advanced or a bug
+      // report — but "Tailwind color utilities aren't editable yet" and
+      // "refusing to guess" are developer language leaking straight into
+      // the main panel, exactly the "still looks like developer UX"
+      // feedback this exists to fix. Pattern-matches the reasons someone
+      // actually hits in normal use to a short, plain-language version;
+      // anything unmatched falls back to the RAW reason rather than a
+      // generic "not editable" — never hides information this project's
+      // whole editing model is built around surfacing honestly, just
+      // improves it where a good plain-language version is known.
+      var REASON_PATTERNS = [
+        [/mixed content/i, "This text is mixed with other elements, so it can't be edited directly here."],
+        [/no text content here/i, "There's no text to edit here."],
+        [/no editable style found|no className or style found/i, "Nothing here is set up to be edited yet."],
+        [/no inline style on this element to add a color/i, "Color isn't set on this element yet."],
+        [/already set via a tailwind utility class/i, "This color is already set a different way — not editable here yet."],
+        [/already set via a more specific utility/i, "This spacing is split across multiple sides — one combined control isn't available for that yet."],
+        [/the source predicts .* but the page actually renders/i, "Something else on the page is overriding this, so it's not safely editable here."],
+        [/is inline — css ignores width and height/i, "This element can't be resized — inline elements ignore width and height."],
+        [/is set to a non-numeric string.*not a plain px dimension/i, "This value isn't a plain number, so it can't be edited with this control."],
+        [/looks like a multi-value shorthand/i, "This spacing has different values per side — one combined control isn't supported for that yet."],
+        [/value isn.t a numeric or plain string literal/i, "This value is computed dynamically, so it can't be edited here."],
+        [/style value isn.t a plain object literal|style is unsupported/i, "This element's style isn't set up in a way that can be edited yet."],
+        [/className is a template literal|classname shape isn.t/i, "This element's classes are built dynamically — not editable here yet."],
+        [/not directly used in a page\/layout file/i, "This is a shared component, not tied to one specific page."],
+      ];
+      function humanizeReason(reason) {
+        for (var i = 0; i < REASON_PATTERNS.length; i++) {
+          if (REASON_PATTERNS[i][0].test(reason)) return REASON_PATTERNS[i][1];
+        }
+        return reason;
+      }
+
       // A plain text input, not a native <input type=color> — that widget
       // only accepts 6-digit hex and can't represent "var(--accent)" or a
       // named color, and a preview swatch can't resolve what a CSS variable
@@ -394,17 +1175,95 @@
       // page's own stylesheet). Shows the raw current value verbatim,
       // whatever form it's already in — same "preserve the author's
       // representation" principle as the dimension fields.
+      // Expands a 3-digit hex ("#abc") to 6-digit ("#aabbcc") — the native
+      // <input type=color> swatch only accepts the 6-digit form.
+      function expandHex3(hex) {
+        var c = hex.slice(1);
+        return "#" + c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+      }
+
+      // A native OS color-picker swatch alongside the raw text field — the
+      // swatch covers the common case (pick a color visually, no hex
+      // knowledge needed, matching Canva/Wix); the text field stays as the
+      // escape hatch for values the swatch can't represent (CSS variables,
+      // named colors — see the module doc comment above on why a plain
+      // <input type=color> alone isn't enough here).
+      // Recently-used hex colors, persisted across reloads (localStorage) —
+      // Canva's "document colors" row, so a repeat color is one click, not
+      // even a trip into the OS picker. Hex only: a non-hex value (var(),
+      // named) has no fixed visual swatch to show here reliably, same
+      // reasoning the native picker fallback already uses.
+      var RECENT_COLORS_KEY = "reframe-recent-colors";
+      var RECENT_COLORS_MAX = 8;
+      function loadRecentColors() {
+        try {
+          var raw = window.localStorage.getItem(RECENT_COLORS_KEY);
+          var parsed = raw ? JSON.parse(raw) : [];
+          return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+          return [];
+        }
+      }
+      function recordRecentColor(value) {
+        if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) return;
+        var hex = value.length === 4 ? expandHex3(value) : value.toLowerCase();
+        var list = loadRecentColors().filter(function (c) {
+          return c.toLowerCase() !== hex.toLowerCase();
+        });
+        list.unshift(hex);
+        list = list.slice(0, RECENT_COLORS_MAX);
+        try {
+          window.localStorage.setItem(RECENT_COLORS_KEY, JSON.stringify(list));
+        } catch (e) {
+          // storage unavailable/full — recent colors just won't persist, not fatal
+        }
+      }
+      function renderRecentColorSwatches(key) {
+        var colors = loadRecentColors();
+        if (colors.length === 0) return "";
+        return (
+          '<div class="recent-colors" data-recent-for="' +
+          key +
+          '">' +
+          colors
+            .map(function (hex) {
+              return (
+                '<button type="button" class="recent-color-swatch" data-recent-color="' +
+                hex +
+                '" title="' +
+                hex +
+                '" style="background:' +
+                hex +
+                '"></button>'
+              );
+            })
+            .join("") +
+          "</div>"
+        );
+      }
+
       function colorField(key, label, prop) {
         var disabled = !prop || !prop.available;
         var value = prop && prop.available && prop.value !== null ? prop.value : "";
-        var note = !prop || prop.available ? "" : '<div class="unavailable">' + prop.reason + "</div>";
-        var backendLabel = prop && prop.backend ? " · " + prop.backend : "";
+        var note = !prop || prop.available ? "" : '<div class="unavailable">' + humanizeReason(prop.reason) + "</div>";
+        var titleAttr = prop && prop.backend ? ' title="Writes to: ' + prop.backend + '"' : "";
+        var isHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+        var pickerValue = isHex ? (value.length === 4 ? expandHex3(value) : value) : "#000000";
         return (
           '<div class="field">' +
-          "<label>" +
+          "<label" +
+          titleAttr +
+          ">" +
           label +
-          backendLabel +
           "</label>" +
+          '<div class="color-input-row">' +
+          '<input type="color" class="color-swatch-input" data-color-for="' +
+          key +
+          '" value="' +
+          pickerValue +
+          '" ' +
+          (disabled ? "disabled" : "") +
+          " />" +
           '<input type="text" data-property="' +
           key +
           '" data-value-kind="color" data-backend="' +
@@ -414,6 +1273,52 @@
           '" placeholder="e.g. #3B82F6 or var(--accent)" ' +
           (disabled ? "disabled" : "") +
           " />" +
+          "</div>" +
+          (disabled ? "" : renderRecentColorSwatches(key)) +
+          note +
+          "</div>"
+        );
+      }
+
+      // A curated preset dropdown alongside the raw text field — same
+      // "swatch for the common case, text field as the escape hatch"
+      // pattern as colorField's native picker. Choosing a preset just
+      // fills the text field's value (doesn't commit by itself); the text
+      // field's own change event does the actual write, same as typing.
+      function fontFamilyField(key, label, prop) {
+        var disabled = !prop || !prop.available;
+        var value = prop && prop.available && prop.value !== null ? prop.value : "";
+        var note = !prop || prop.available ? "" : '<div class="unavailable">' + humanizeReason(prop.reason) + "</div>";
+        var titleAttr = prop && prop.backend ? ' title="Writes to: ' + prop.backend + '"' : "";
+        var options = '<option value="">Preset…</option>';
+        for (var i = 0; i < FONT_PRESETS.length; i++) {
+          options += '<option value="' + escapeHtml(FONT_PRESETS[i].value) + '">' + FONT_PRESETS[i].label + "</option>";
+        }
+        return (
+          '<div class="field">' +
+          "<label" +
+          titleAttr +
+          ">" +
+          label +
+          "</label>" +
+          '<div class="color-input-row">' +
+          '<select class="font-preset-select" data-font-preset-for="' +
+          key +
+          '" ' +
+          (disabled ? "disabled" : "") +
+          ">" +
+          options +
+          "</select>" +
+          '<input type="text" data-property="' +
+          key +
+          '" data-value-kind="color" data-backend="' +
+          (prop && prop.backend ? prop.backend : "") +
+          '" value="' +
+          escapeHtml(value) +
+          '" placeholder="e.g. Georgia, serif or var(--serif)" ' +
+          (disabled ? "disabled" : "") +
+          " />" +
+          "</div>" +
           note +
           "</div>"
         );
@@ -427,11 +1332,11 @@
       function textField(text) {
         if (!text || !text.editable) {
           var reason = text ? text.reason : "no editable text here";
-          return '<div class="field"><label>Content</label><div class="unavailable">' + reason + "</div></div>";
+          return '<div class="field"><label>Text</label><div class="unavailable">' + humanizeReason(reason) + "</div></div>";
         }
         return (
           '<div class="field">' +
-          "<label>Content</label>" +
+          "<label>Text</label>" +
           '<textarea data-text-field rows="3">' +
           escapeHtml(text.value) +
           "</textarea>" +
@@ -439,10 +1344,496 @@
         );
       }
 
+      // A human name for what's selected — "Heading", "Button", "Image" —
+      // instead of the raw JSX tag or the component's own source name.
+      // Falls back to a capitalized version of whatever tag/component name
+      // is available for anything not in this list, never a blank label.
+      var FRIENDLY_ELEMENT_NAMES = {
+        h1: "Heading",
+        h2: "Heading",
+        h3: "Heading",
+        h4: "Heading",
+        h5: "Heading",
+        h6: "Heading",
+        p: "Paragraph",
+        span: "Text",
+        a: "Link",
+        Link: "Link",
+        button: "Button",
+        img: "Image",
+        Image: "Image",
+        nav: "Navigation",
+        ul: "List",
+        ol: "List",
+        li: "List item",
+        section: "Section",
+        main: "Section",
+        header: "Section",
+        footer: "Section",
+        div: "Box",
+        Box: "Box",
+      };
+      function friendlyElementName(tagOrComponent) {
+        if (!tagOrComponent) return "Element";
+        return FRIENDLY_ELEMENT_NAMES[tagOrComponent] || tagOrComponent.charAt(0).toUpperCase() + tagOrComponent.slice(1);
+      }
+
+      // Property groups, in display order — a flat list of 9 fields reads
+      // as a form to fill out; grouped under plain headings it reads as
+      // "what can I change about this," matching how Wix/Canva-style
+      // editors present the same information. Only rendered when at least
+      // one field in the group exists on this element at all (present in
+      // the resolved properties, whether currently available or not) —
+      // empty groups are silently skipped rather than shown "empty."
+      var PROPERTY_GROUPS = [
+        { title: "Typography", keys: ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing"] },
+        { title: "Color", keys: ["textColor", "backgroundColor"] },
+        { title: "Spacing", keys: ["padding"] },
+        { title: "Size", keys: ["width", "height"] },
+      ];
+      var FIELD_LABELS = {
+        height: "Height",
+        width: "Width",
+        padding: "Padding",
+        textColor: "Text",
+        backgroundColor: "Background",
+        fontFamily: "Font",
+        fontSize: "Font size",
+        fontWeight: "Weight",
+        lineHeight: "Line height",
+        letterSpacing: "Letter spacing",
+      };
+
+      // A curated, common-and-safe list rather than an exhaustive font
+      // catalog — ReFrame can't know what's actually loaded/available in
+      // the target project (no font-loading/@font-face scan), so this is
+      // deliberately restricted to system/web-safe stacks + the project's
+      // own existing CSS custom properties are still reachable by typing
+      // them directly in the text field below. Picking one here just fills
+      // in the text field; nothing is committed until the field commits.
+      var FONT_PRESETS = [
+        { label: "System UI", value: "system-ui, sans-serif" },
+        { label: "Sans-serif", value: "ui-sans-serif, Helvetica, Arial, sans-serif" },
+        { label: "Serif", value: "ui-serif, Georgia, 'Times New Roman', serif" },
+        { label: "Monospace", value: "ui-monospace, 'SF Mono', Menlo, monospace" },
+        { label: "Georgia", value: "Georgia, serif" },
+        { label: "Helvetica", value: "Helvetica, Arial, sans-serif" },
+      ];
+
+      // The toolbar mirrors PROPERTY_GROUPS (plus a leading "Text" entry
+      // when this element's content is directly editable) — same keys, so
+      // a toolbar button and its popup show exactly what the full panel's
+      // matching section would, just one click closer to the element
+      // instead of a scroll away in the side panel.
+      // Everything NOT promoted to an inline control below (see
+      // updateCanvasToolbar) — reachable via the toolbar's "More" button,
+      // same popup mechanism as before, just for a smaller leftover set.
+      var MORE_KEYS = ["fontWeight", "lineHeight", "letterSpacing", "padding", "width", "height"];
+      var openPopupGroup = null;
+
+      function keyAvailable(key) {
+        return !!(current && current.properties && current.properties.editable && current.properties.values[key]);
+      }
+
+      function closeCanvasPopup() {
+        openPopupGroup = null;
+        var popup = document.getElementById("canvas-popup");
+        popup.style.display = "none";
+        popup.innerHTML = "";
+        Array.prototype.forEach.call(document.querySelectorAll(".toolbar-btn.active"), function (btn) {
+          btn.classList.remove("active");
+        });
+      }
+
+      function closeCanvasToolbar() {
+        closeCanvasPopup();
+        document.getElementById("canvas-toolbar").style.display = "none";
+      }
+
+      // Each popup trigger renders its OWN, narrow content — a single color
+      // field for a swatch, the leftover fields for "More" — never a whole
+      // group behind one extra click the way the previous design required.
+      var POPUP_CONTENT = {
+        textColor: function () {
+          return colorField("textColor", "Text color", current.properties.values.textColor);
+        },
+        backgroundColor: function () {
+          return colorField("backgroundColor", "Background color", current.properties.values.backgroundColor);
+        },
+        more: function () {
+          return renderGroupFields(MORE_KEYS) || '<div class="empty">Nothing else editable here.</div>';
+        },
+      };
+
+      function renderCanvasPopup(popupId, btnEl) {
+        var popup = document.getElementById("canvas-popup");
+        popup.innerHTML = POPUP_CONTENT[popupId]();
+
+        var wrap = document.getElementById("canvas-frame-wrap");
+        var wrapRect = wrap.getBoundingClientRect();
+        var btnRect = btnEl.getBoundingClientRect();
+        popup.style.left = Math.max(0, btnRect.left - wrapRect.left) + "px";
+        popup.style.top = btnRect.bottom - wrapRect.top + 6 + "px";
+        popup.style.display = "block";
+        wireFieldInputs(popup);
+      }
+
+      function toggleCanvasPopup(popupId, btnEl) {
+        if (openPopupGroup === popupId) {
+          closeCanvasPopup();
+          return;
+        }
+        openPopupGroup = popupId;
+        Array.prototype.forEach.call(document.querySelectorAll(".toolbar-btn.active, .toolbar-swatch.active"), function (btn) {
+          btn.classList.remove("active");
+        });
+        btnEl.classList.add("active");
+        renderCanvasPopup(popupId, btnEl);
+      }
+
+      // Positioned just above the selected element (below it if there's no
+      // room above), following the CURRENT selection's rect — called at
+      // the end of every renderProperties, since which buttons make sense
+      // depends on properties that only exist once resolve completes, not
+      // on the raw click rect alone.
+      // Deleting a component's own root doesn't make sense from a single
+      // canvas click (see host.ts's /__reframe/delete for the full reason)
+      // — only a nested element (current.path non-empty) can be deleted,
+      // same restriction the server enforces, checked here too so the
+      // button simply doesn't appear rather than appearing and refusing.
+      function canDeleteCurrent() {
+        return !!(current && current.path && current.path.length > 0);
+      }
+
+      function deleteSelectedElement() {
+        if (!canDeleteCurrent()) return;
+        if (!window.confirm("Delete this element? This edits your source file.")) return;
+        var diffEl = document.getElementById("diff");
+        diffEl.textContent = "deleting...";
+        fetch("/__reframe/delete", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ component: current.component, route: current.route, path: current.path }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            if (result.ok) {
+              refreshHistory();
+              current = null;
+              updateSelectionOverlay(null);
+              closeCanvasToolbar();
+              document.getElementById("properties-body").innerHTML =
+                '<div class="empty">Click something in the canvas, or select it from Pages.</div>';
+            }
+          })
+          .catch(function (err) {
+            diffEl.textContent = "error: " + err;
+          });
+      }
+
+      // Same restriction as delete (see /__reframe/duplicate) — a
+      // component's own root can't be duplicated from a canvas click.
+      function canDuplicateCurrent() {
+        return canDeleteCurrent();
+      }
+
+      function duplicateSelectedElement() {
+        if (!canDuplicateCurrent()) return;
+        var diffEl = document.getElementById("diff");
+        diffEl.textContent = "duplicating...";
+        fetch("/__reframe/duplicate", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ component: current.component, route: current.route, path: current.path }),
+        })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (result) {
+            diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
+            if (result.ok) refreshHistory();
+          })
+          .catch(function (err) {
+            diffEl.textContent = "error: " + err;
+          });
+      }
+
+      // Nudges fontSize by 1px directly from the toolbar — no button-then-
+      // popup step for the single most-reached-for control. Each click is
+      // its own write (same one-write-per-change model drag-resize and
+      // every other control already use), not batched/debounced — simple
+      // and predictable over clever.
+      function applyFontSizeStep(next) {
+        next = Math.max(1, Math.round(next));
+        mutate("fontSize", next, propBackend("fontSize"));
+        var valueEl = document.getElementById("toolbar-fontsize-value");
+        if (valueEl) valueEl.textContent = next;
+        current.properties.values.fontSize.px = next; // keep the toolbar's
+        // own optimistic display in sync without a full re-resolve round trip
+        var sideInput = document.querySelector('input[data-property="fontSize"]');
+        if (sideInput) sideInput.value = next;
+      }
+
+      // A real bug, found live: when fontSize isn't explicitly set on the
+      // element at all (inherited from a parent/browser default — px is
+      // null, not 0), defaulting the stepper's baseline to 0 produced
+      // fontSize:1, fontSize:2 — a tiny, nonsensical value on the first
+      // couple of clicks, caught immediately by the external-CSS safety
+      // net ("the page didn't render the change") since nothing renders
+      // text at 2px. Never guess a baseline: ask the real browser what
+      // it's actually currently rendering and nudge from there.
+      function stepFontSize(delta) {
+        var prop = current.properties.values.fontSize;
+        if (prop && prop.available && prop.px !== null) {
+          applyFontSizeStep(prop.px + delta);
+          return;
+        }
+        requestComputedStyle().then(function (computed) {
+          var basePx = computed && computed.fontSize ? parseFloat(computed.fontSize) : NaN;
+          if (Number.isNaN(basePx)) basePx = 16; // last-resort fallback only if the browser itself couldn't be asked
+          applyFontSizeStep(basePx + delta);
+        });
+      }
+
+      // A round preview of the CURRENT color, not a labeled icon — clicking
+      // it opens a ONE-field popup directly. `var(--x)`/named colors can't
+      // be resolved into a real swatch color from this document (the
+      // variable is defined in the TARGET page's own stylesheet) — shown
+      // as an empty/checkerboard swatch in that case rather than guessing
+      // a color, same "don't guess" bar as everywhere else in this file.
+      function renderColorSwatch(key, title) {
+        var prop = current.properties.values[key];
+        var value = prop && prop.available ? prop.value : null;
+        var isHex = value && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
+        var style = isHex ? ' style="background:' + value + '"' : "";
+        return (
+          '<button class="toolbar-swatch' +
+          (isHex ? "" : " empty") +
+          '" data-swatch="' +
+          key +
+          '" title="' +
+          title +
+          '"' +
+          style +
+          "></button>"
+        );
+      }
+
+      function updateCanvasToolbar() {
+        var toolbar = document.getElementById("canvas-toolbar");
+        closeCanvasPopup();
+        if (!lastRect || !current) {
+          toolbar.style.display = "none";
+          return;
+        }
+        var canEditText = !!(current.text && current.text.editable);
+        var hasFontSize = keyAvailable("fontSize");
+        var hasTextColor = keyAvailable("textColor");
+        var hasBgColor = keyAvailable("backgroundColor");
+        var hasMore = MORE_KEYS.some(keyAvailable);
+        var canDelete = canDeleteCurrent();
+        var canDuplicate = canDuplicateCurrent();
+        if (!canEditText && !hasFontSize && !hasTextColor && !hasBgColor && !hasMore && !canDelete && !canDuplicate) {
+          toolbar.style.display = "none";
+          return;
+        }
+
+        var parts = [];
+        if (canEditText) {
+          parts.push('<button class="toolbar-btn" id="toolbar-edit-text-btn" title="Edit text"><span class="icon">✎</span></button>');
+        }
+        if (hasFontSize) {
+          var fsProp = current.properties.values.fontSize;
+          var fsValue = fsProp.available && fsProp.px !== null ? fsProp.px : "—";
+          parts.push(
+            '<div class="toolbar-stepper" title="Font size">' +
+              '<button class="stepper-btn" data-step="-1">–</button>' +
+              '<span class="stepper-value" id="toolbar-fontsize-value">' +
+              fsValue +
+              "</span>" +
+              '<button class="stepper-btn" data-step="1">+</button>' +
+              "</div>",
+          );
+        }
+        if (hasTextColor) parts.push(renderColorSwatch("textColor", "Text color"));
+        if (hasBgColor) parts.push(renderColorSwatch("backgroundColor", "Background color"));
+        if ((canEditText || hasFontSize || hasTextColor || hasBgColor) && hasMore) parts.push('<div class="toolbar-sep"></div>');
+        if (hasMore) parts.push('<button class="toolbar-btn" id="toolbar-more-btn" title="More properties"><span class="icon">⋯</span></button>');
+        if (canDuplicate) {
+          parts.push('<button class="toolbar-btn" id="toolbar-duplicate-btn" title="Duplicate this element"><span class="icon">⧉</span></button>');
+        }
+        if (canDelete) {
+          parts.push('<button class="toolbar-btn toolbar-btn-delete" id="toolbar-delete-btn" title="Delete this element"><span class="icon">🗑</span></button>');
+        }
+        toolbar.innerHTML = parts.join("");
+
+        var offset = iframeOffset();
+        var top = lastRect.y - 44;
+        if (top < 4) top = lastRect.y + lastRect.height + 8;
+        toolbar.style.left = lastRect.x + offset.x + "px";
+        toolbar.style.top = top + offset.y + "px";
+        toolbar.style.display = "flex";
+
+        var editTextBtn = document.getElementById("toolbar-edit-text-btn");
+        if (editTextBtn) {
+          editTextBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            closeCanvasPopup();
+            postToFrame({ type: "reframe-enter-text-edit" });
+          });
+        }
+        Array.prototype.forEach.call(toolbar.querySelectorAll(".stepper-btn"), function (btn) {
+          btn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            stepFontSize(Number(btn.getAttribute("data-step")));
+          });
+        });
+        Array.prototype.forEach.call(toolbar.querySelectorAll(".toolbar-swatch"), function (btn) {
+          btn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            toggleCanvasPopup(btn.getAttribute("data-swatch"), btn);
+          });
+        });
+        var moreBtn = document.getElementById("toolbar-more-btn");
+        if (moreBtn) {
+          moreBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            toggleCanvasPopup("more", moreBtn);
+          });
+        }
+        var duplicateBtn = document.getElementById("toolbar-duplicate-btn");
+        if (duplicateBtn) {
+          duplicateBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            duplicateSelectedElement();
+          });
+        }
+        var deleteBtn = document.getElementById("toolbar-delete-btn");
+        if (deleteBtn) {
+          deleteBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            deleteSelectedElement();
+          });
+        }
+      }
+
+      document.addEventListener("click", function (event) {
+        if (!openPopupGroup) return;
+        var popup = document.getElementById("canvas-popup");
+        var toolbar = document.getElementById("canvas-toolbar");
+        if (!popup.contains(event.target) && !toolbar.contains(event.target)) closeCanvasPopup();
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && openPopupGroup) closeCanvasPopup();
+      });
+
+      // Renders one group's fields as HTML — shared by the full panel
+      // (grouped under a heading) and the floating canvas popup (one
+      // group's fields alone, no heading needed since the toolbar button
+      // that opened it already said what this is).
+      function renderGroupFields(keys) {
+        if (!current || !current.properties || !current.properties.editable) return "";
+        var values = current.properties.values;
+        return keys
+          .filter(function (key) {
+            return Object.prototype.hasOwnProperty.call(values, key);
+          })
+          .map(function (key) {
+            var prop = values[key];
+            var label = FIELD_LABELS[key] || key;
+            if (prop && prop.kind === "color") return colorField(key, label, prop);
+            if (prop && prop.kind === "text") return fontFamilyField(key, label, prop);
+            return propertyField(key, label, prop);
+          })
+          .join("");
+      }
+
+      // Attaches the change listeners any rendered field markup needs,
+      // scoped to one container — called after EVERY render of field
+      // markup (the main panel, and separately each time a canvas popup
+      // renders), never globally, so the main panel's already-wired inputs
+      // never get a second listener stacked on top when a popup renders.
+      function wireFieldInputs(container) {
+        Array.prototype.forEach.call(container.querySelectorAll("input[data-property]"), function (el) {
+          el.addEventListener("change", function () {
+            if (el.getAttribute("data-value-kind") === "color") {
+              mutateColor(el.getAttribute("data-property"), el.value, el.getAttribute("data-backend"));
+              var picker = container.querySelector('.color-swatch-input[data-color-for="' + el.getAttribute("data-property") + '"]');
+              if (picker && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(el.value)) {
+                picker.value = el.value.length === 4 ? expandHex3(el.value) : el.value;
+              }
+            } else {
+              mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
+            }
+          });
+        });
+        Array.prototype.forEach.call(container.querySelectorAll(".number-input-row .stepper-btn"), function (btn) {
+          btn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            var key = btn.getAttribute("data-step-for");
+            var dir = Number(btn.getAttribute("data-step-dir"));
+            var input = container.querySelector('input[data-property="' + key + '"]');
+            if (!input) return;
+            var cfg = stepConfigFor(key);
+            var base = input.value === "" ? 0 : Number(input.value);
+            var next = base + dir * cfg.step;
+            if (cfg.min !== undefined && cfg.min !== null) next = Math.max(cfg.min, next);
+            if (cfg.max !== undefined && cfg.max !== null) next = Math.min(cfg.max, next);
+            next = Number(next.toFixed(cfg.precision));
+            input.value = next;
+            mutate(key, next, input.getAttribute("data-backend"));
+          });
+        });
+        Array.prototype.forEach.call(container.querySelectorAll(".color-swatch-input"), function (picker) {
+          var key = picker.getAttribute("data-color-for");
+          var textEl = container.querySelector('input[data-property="' + key + '"][data-value-kind="color"]');
+          picker.addEventListener("input", function () {
+            if (textEl) textEl.value = picker.value;
+          });
+          picker.addEventListener("change", function () {
+            mutateColor(key, picker.value, textEl ? textEl.getAttribute("data-backend") : "");
+          });
+        });
+        Array.prototype.forEach.call(container.querySelectorAll(".recent-color-swatch"), function (swatch) {
+          var row = swatch.closest(".recent-colors");
+          var key = row ? row.getAttribute("data-recent-for") : null;
+          if (!key) return;
+          var textEl = container.querySelector('input[data-property="' + key + '"][data-value-kind="color"]');
+          var picker = container.querySelector('.color-swatch-input[data-color-for="' + key + '"]');
+          swatch.addEventListener("click", function (event) {
+            event.stopPropagation();
+            var hex = swatch.getAttribute("data-recent-color");
+            if (textEl) textEl.value = hex;
+            if (picker) picker.value = hex;
+            mutateColor(key, hex, textEl ? textEl.getAttribute("data-backend") : "");
+          });
+        });
+        Array.prototype.forEach.call(container.querySelectorAll(".font-preset-select"), function (select) {
+          var key = select.getAttribute("data-font-preset-for");
+          var textEl = container.querySelector('input[data-property="' + key + '"][data-value-kind="color"]');
+          select.addEventListener("change", function () {
+            if (!select.value) return; // "Preset…" placeholder re-selected — no-op
+            if (textEl) textEl.value = select.value;
+            mutateColor(key, select.value, textEl ? textEl.getAttribute("data-backend") : "");
+            select.value = ""; // back to placeholder — the text field above now shows the real current value
+          });
+        });
+        var textEl2 = container.querySelector("textarea[data-text-field]");
+        if (textEl2) {
+          textEl2.addEventListener("change", function () {
+            mutateText(textEl2.value);
+          });
+        }
+      }
+
       function renderProperties(result) {
         var body = document.getElementById("properties-body");
         if (!result.ok) {
           body.innerHTML = '<div class="empty">' + result.error + "</div>";
+          closeCanvasToolbar();
           return;
         }
 
@@ -455,17 +1846,18 @@
           usageCount: result.usageCount,
           availableInstance: result.kind === "usage",
           path: path,
+          properties: result.properties,
         };
         scope = "all";
 
         var shared = result.usageCount > 1;
         var metaText = shared
-          ? "Shared component · " + result.usageCount + " usages"
+          ? "Shared · " + result.usageCount + " places"
           : result.usageCount === 1
             ? "1 usage"
-            : "Page component";
+            : "Page";
         var scopeDisabledAttr = current.availableInstance ? "" : "disabled";
-        var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + result.note + "</div>" : "";
+        var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + humanizeReason(result.note) + "</div>" : "";
 
         // A nested element inside a component's render — not a new component,
         // just a specific JSX node — gets a breadcrumb (its position within
@@ -498,27 +1890,26 @@
             "</div>";
         }
 
-        var propsHtml = "(no editable properties here)";
+        // A friendly name for what's selected — "Heading", "Link" — not the
+        // raw JSX tag or the component's own source name. For a nested
+        // element the breadcrumb's last entry IS that tag/component name;
+        // for a page's own root there's no tag to map from, so the
+        // component's own (usually already-sensible) name is kept as-is.
+        var leafName =
+          isNested && result.breadcrumb && result.breadcrumb.length ? result.breadcrumb[result.breadcrumb.length - 1] : null;
+        var titleText = leafName ? friendlyElementName(leafName) : result.component;
+
+        current.text = result.text;
+        current.title = titleText;
+
+        var propsHtml = "";
         var hiddenStyleNote = "";
         if (result.properties && result.properties.editable) {
-          propsHtml = Object.keys(result.properties.values)
-            .map(function (key) {
-              var labels = {
-                height: "Height",
-                width: "Width",
-                padding: "Padding",
-                textColor: "Text color",
-                backgroundColor: "Background color",
-                fontSize: "Font size",
-                fontWeight: "Font weight",
-                lineHeight: "Line height",
-                letterSpacing: "Letter spacing",
-              };
-              var prop = result.properties.values[key];
-              var label = labels[key] || key;
-              return prop && prop.kind === "color" ? colorField(key, label, prop) : propertyField(key, label, prop);
-            })
-            .join("");
+          propsHtml = PROPERTY_GROUPS.map(function (group) {
+            var fieldsHtml = renderGroupFields(group.keys);
+            if (!fieldsHtml) return "";
+            return '<div class="prop-group"><div class="prop-group-title">' + group.title + "</div>" + fieldsHtml + "</div>";
+          }).join("");
           // Never guess which property a computed/bracket style key (e.g. a
           // `key as any` TS cast) would have mapped to — just say plainly
           // that this element's style object has more in it than what's
@@ -526,13 +1917,20 @@
           // exist at all.
           if (result.properties.hasHiddenStyleProperties) {
             hiddenStyleNote =
-              '<div class="unavailable" style="margin-bottom: 14px">This element\'s style has at least one property ReFrame can\'t read (a computed/bracket key) — not shown above, not touched by any edit here.</div>';
+              '<div class="unavailable" style="margin-bottom: 14px">This element has a few more style properties that aren\'t shown here and won\'t be touched by any edit.</div>';
           }
         } else if (result.properties) {
-          propsHtml = '<div class="unavailable">' + result.properties.reason + "</div>";
+          propsHtml = '<div class="unavailable">' + humanizeReason(result.properties.reason) + "</div>";
         }
+        if (!propsHtml) propsHtml = '<div class="empty">Nothing editable on this element yet.</div>';
 
-        body.innerHTML =
+        // Everything genuinely useful for understanding HOW an edit lands
+        // (source component, usage count/scope, exact JSX path, backend
+        // representation notes) — real information, just not what a "click
+        // it, change it" editor should lead with. Collapsed by default,
+        // one click away for anyone who wants it.
+        var advancedHtml =
+          '<details class="advanced"><summary>Advanced</summary>' +
           '<div class="selection-title">' +
           result.component +
           "</div>" +
@@ -540,32 +1938,49 @@
           metaText +
           "</div>" +
           breadcrumbHtml +
+          scopeHtml +
+          "</details>";
+
+        body.innerHTML =
+          '<div class="selection-title">' +
+          titleText +
+          "</div>" +
           noteHtml +
           textField(result.text) +
-          scopeHtml +
           hiddenStyleNote +
-          propsHtml;
+          propsHtml +
+          advancedHtml;
 
         Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (el) {
           el.addEventListener("change", function () {
             scope = el.value;
           });
         });
-        Array.prototype.forEach.call(document.querySelectorAll("input[data-property]"), function (el) {
-          el.addEventListener("change", function () {
-            if (el.getAttribute("data-value-kind") === "color") {
-              mutateColor(el.getAttribute("data-property"), el.value, el.getAttribute("data-backend"));
-            } else {
-              mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
-            }
-          });
-        });
-        var textEl = document.querySelector("textarea[data-text-field]");
-        if (textEl) {
-          textEl.addEventListener("change", function () {
-            mutateText(textEl.value);
-          });
-        }
+        wireFieldInputs(body);
+
+        updateCanvasToolbar();
+        updateResizeHandles();
+      }
+
+      // A handle that's visible and looks draggable but silently does
+      // nothing on release (startDrag already refuses when the property
+      // isn't available) is exactly the "fake affordance" this model
+      // avoids everywhere else — verified live that an inline `<em>`'s
+      // resize handles otherwise sat there fully clickable, producing a
+      // real write and a real "didn't render" warning on every single
+      // drag, since CSS ignores width/height on an inline element
+      // entirely. Hidden per-axis (the corner handle needs EITHER axis
+      // available, since it can still drag whichever one works) rather
+      // than all-or-nothing.
+      function updateResizeHandles() {
+        var wantsWidth = propAvailable("width");
+        var wantsHeight = propAvailable("height");
+        var eHandle = document.querySelector(".handle-e");
+        var sHandle = document.querySelector(".handle-s");
+        var seHandle = document.querySelector(".handle-se");
+        if (eHandle) eHandle.style.display = wantsWidth ? "" : "none";
+        if (sHandle) sHandle.style.display = wantsHeight ? "" : "none";
+        if (seHandle) seHandle.style.display = wantsWidth || wantsHeight ? "" : "none";
       }
 
       window.addEventListener("message", function (event) {
@@ -608,7 +2023,31 @@
           return;
         }
 
+        if (data.type === "rect-result") {
+          var pendingRect = pendingRectRequests[data.requestId];
+          if (pendingRect) {
+            delete pendingRectRequests[data.requestId];
+            pendingRect(data.rect);
+          }
+          return;
+        }
+
+        if (data.type === "computed-result") {
+          var pendingComputed = pendingComputedRequests[data.requestId];
+          if (pendingComputed) {
+            delete pendingComputedRequests[data.requestId];
+            pendingComputed(data.computed);
+          }
+          return;
+        }
+
+        if (data.type === "inline-text-committed") {
+          mutateText(data.value);
+          return;
+        }
+
         if (data.type !== "select") return;
+        updateSelectionOverlay(data.rect);
         resolveSelection(data.component, data.route, data.path, data.elementTag, data.computedStyle);
       });
 
@@ -637,6 +2076,40 @@
             { type: "reframe-verify-computed-style", requestId: requestId, property: property, kind: kind, expected: expected },
             "*",
           );
+        });
+      }
+
+      var pendingRectRequests = {};
+      var rectRequestCounter = 0;
+      function requestFreshRect() {
+        return new Promise(function (resolve) {
+          var requestId = "r" + rectRequestCounter++;
+          var timeoutId = setTimeout(function () {
+            delete pendingRectRequests[requestId];
+            resolve(null);
+          }, 1500);
+          pendingRectRequests[requestId] = function (rect) {
+            clearTimeout(timeoutId);
+            resolve(rect);
+          };
+          postToFrame({ type: "reframe-get-rect", requestId: requestId });
+        });
+      }
+
+      var pendingComputedRequests = {};
+      var computedRequestCounter = 0;
+      function requestComputedStyle() {
+        return new Promise(function (resolve) {
+          var requestId = "c" + computedRequestCounter++;
+          var timeoutId = setTimeout(function () {
+            delete pendingComputedRequests[requestId];
+            resolve(null);
+          }, 1500);
+          pendingComputedRequests[requestId] = function (computed) {
+            clearTimeout(timeoutId);
+            resolve(computed);
+          };
+          postToFrame({ type: "reframe-get-computed", requestId: requestId });
         });
       }
 
@@ -697,6 +2170,7 @@
             px: px,
             backend: backend,
             path: current.path || [],
+            viewport: currentViewport,
           }),
         })
           .then(function (r) {
@@ -742,6 +2216,7 @@
             diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
             if (result.ok) {
               refreshHistory();
+              recordRecentColor(value); // no-op for non-hex values (var(), named colors, font stacks)
               setTimeout(function () {
                 verifyComputedStyleWithRetry(property, "color", value, [800, 1500]).then(function (verifyResult) {
                   appendVerificationWarning(diffEl, property, value, "color", verifyResult);
@@ -831,9 +2306,33 @@
       });
       window.addEventListener("keydown", function (event) {
         var mod = event.metaKey || event.ctrlKey;
-        if (!mod || event.key.toLowerCase() !== "z") return;
-        event.preventDefault();
-        undoOrRedo(event.shiftKey ? "redo" : "undo");
+        if (mod && event.key.toLowerCase() === "z") {
+          event.preventDefault();
+          undoOrRedo(event.shiftKey ? "redo" : "undo");
+          return;
+        }
+        if (mod && event.key.toLowerCase() === "d" && canDuplicateCurrent()) {
+          event.preventDefault();
+          duplicateSelectedElement();
+          return;
+        }
+      });
+
+      Array.prototype.forEach.call(document.querySelectorAll(".reframe-handle"), function (el) {
+        el.addEventListener("mousedown", function (event) {
+          startDrag(el.getAttribute("data-handle"), event);
+        });
+      });
+
+      // Collapsible Pages/Properties panels — the website in the canvas is
+      // the product; the surrounding chrome should be able to get out of
+      // the way, not compete with it for space by default.
+      Array.prototype.forEach.call(document.querySelectorAll(".panel-toggle"), function (btn) {
+        btn.addEventListener("click", function () {
+          var panel = document.getElementById(btn.getAttribute("data-panel"));
+          var collapsed = panel.classList.toggle("collapsed");
+          btn.textContent = collapsed ? (btn.getAttribute("data-panel") === "tree" ? "›" : "‹") : btn.getAttribute("data-panel") === "tree" ? "‹" : "›";
+        });
       });
 
       loadTree();

@@ -6,6 +6,8 @@ import { diffLines } from "diff";
 import { describe, expect, it } from "vitest";
 
 import { applyClassMutation } from "../src/mutate/class.js";
+import { removeElement } from "../src/mutate/delete.js";
+import { duplicateElement } from "../src/mutate/duplicate.js";
 import { moveChild } from "../src/mutate/move.js";
 import { setUsageProp } from "../src/mutate/prop.js";
 import { buildComponentGraph } from "../src/parse.js";
@@ -230,6 +232,112 @@ describe("move / reorder children", () => {
     const { graph } = loadFixture();
     const home = resolveDefinition(graph, "Home");
     expect(() => moveChild(home.rootElement, 0, 99)).toThrow(/out of range/);
+  });
+});
+
+describe("delete element", () => {
+  // componentOrder (the move-tests' helper) sorts by source.indexOf, where
+  // "not found" is -1 — which sorts FIRST, not "absent." It only works for
+  // reordering (every name always present); deletion needs to check
+  // absence directly and check the remaining order separately.
+  function remainingOrder(source: string, names: string[]): string[] {
+    return names.filter((name) => source.includes(`<${name}`));
+  }
+
+  it("removes an element from the middle, closing the gap", () => {
+    const { graph, originalSources } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    removeElement(home.rootElement, 2); // Card
+
+    const before = originalSources.get("Home.tsx")!;
+    const after = printFile(graph, "Home.tsx");
+    expect(after).not.toContain("<Card");
+    expect(remainingOrder(after, ["Navbar", "Hero", "Card", "Button", "Footer"])).toEqual([
+      "Navbar",
+      "Hero",
+      "Button",
+      "Footer",
+    ]);
+    expect(changedFiles(graph, originalSources)).toEqual(new Set(["Home.tsx"]));
+    // Only the removed element's own line(s) + its leading indentation
+    // disappear — no reformatting of anything around it.
+    expect(changedLineCount(before, after)).toBeLessThanOrEqual(2);
+  });
+
+  it("removes the first element", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    removeElement(home.rootElement, 0); // Navbar
+    const after = printFile(graph, "Home.tsx");
+    expect(after).not.toContain("<Navbar");
+    expect(remainingOrder(after, ["Navbar", "Hero", "Card", "Button", "Footer"])).toEqual(["Hero", "Card", "Button", "Footer"]);
+  });
+
+  it("removes the last element", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    removeElement(home.rootElement, 4); // Footer
+    const after = printFile(graph, "Home.tsx");
+    expect(after).not.toContain("<Footer");
+    expect(remainingOrder(after, ["Navbar", "Hero", "Card", "Button", "Footer"])).toEqual(["Navbar", "Hero", "Card", "Button"]);
+  });
+
+  it("rejects an out-of-range index rather than guessing", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    expect(() => removeElement(home.rootElement, 99)).toThrow(/No element child/);
+  });
+});
+
+describe("duplicate element", () => {
+  it("inserts a clone immediately after the original in the middle", () => {
+    const { graph, originalSources } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    duplicateElement(home.rootElement, 2); // Card
+
+    const before = originalSources.get("Home.tsx")!;
+    const after = printFile(graph, "Home.tsx");
+    const occurrences = after.split("<Card").length - 1;
+    expect(occurrences).toBe(2);
+    expect(changedFiles(graph, originalSources)).toEqual(new Set(["Home.tsx"]));
+    // Only the duplicated element's own line(s) + indentation are new —
+    // nothing else in the file gets reformatted.
+    expect(after.length - before.length).toBeLessThan(200);
+  });
+
+  it("duplicates the first element, keeping the rest in place", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    duplicateElement(home.rootElement, 0); // Navbar
+    const after = printFile(graph, "Home.tsx");
+    expect(after.split("<Navbar").length - 1).toBe(2);
+    expect(after.split("<Hero").length - 1).toBe(1);
+  });
+
+  it("duplicates the last element", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    duplicateElement(home.rootElement, 4); // Footer
+    const after = printFile(graph, "Home.tsx");
+    expect(after.split("<Footer").length - 1).toBe(2);
+  });
+
+  it("rejects an out-of-range index rather than guessing", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    expect(() => duplicateElement(home.rootElement, 99)).toThrow(/No element child/);
+  });
+
+  it("the clone is independently editable from the original", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+    duplicateElement(home.rootElement, 2); // Card
+    // Removing the clone (now at index 3) should leave exactly one Card.
+    removeElement(home.rootElement, 3);
+    const after = printFile(graph, "Home.tsx");
+    expect(after.split("<Card").length - 1).toBe(1);
   });
 });
 

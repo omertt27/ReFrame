@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { buildComponentGraph } from "../src/parse.js";
-import { EDITABLE_PROPERTIES, readProperty, readStyleObjectProperty, writeProperty } from "../src/properties.js";
+import {
+  EDITABLE_PROPERTIES,
+  readProperty,
+  readResponsiveProperty,
+  readStyleObjectProperty,
+  writeProperty,
+  writeResponsiveProperty,
+} from "../src/properties.js";
 import { resolveDefinition } from "../src/resolve.js";
 import { pxToSpacingToken, spacingTokenToPx } from "../src/tailwind-scale.js";
 import { writeStyleProperty } from "../src/mutate/style.js";
@@ -170,5 +177,65 @@ describe("typography properties (fontSize/fontWeight/lineHeight/letterSpacing) �
     const def = resolveDefinition(graph, "X");
     expect(() => readStyleObjectProperty(def.styleAttr!.ir, lineHeight)).not.toThrow();
     expect(readStyleObjectProperty(def.styleAttr!.ir, lineHeight)).toEqual({ available: true, px: 1.1 });
+  });
+});
+
+describe("readResponsiveProperty / writeResponsiveProperty — device-tier-aware, additive alongside the base-only functions above", () => {
+  // Uses height/padding (the numeric spacing-scale properties that
+  // actually have a Tailwind prefix) rather than fontSize — Tailwind's
+  // text-lg/text-6xl scale (the property in the user's own worked example,
+  // "text-6xl md:text-5xl") is a keyword scale EDITABLE_PROPERTIES
+  // deliberately doesn't map a Tailwind prefix onto (see fontSize's own
+  // comment) — but the exact same mobile-first read/write principle
+  // applies identically to any prefixed property; height/padding are just
+  // the ones actually wired up to demonstrate it against today.
+
+  it("mobile reads the base value, ignoring larger breakpoints entirely — nothing overrides mobile from above", () => {
+    expect(readResponsiveProperty("h-24 md:h-20 lg:h-16", height, "mobile")).toEqual({ available: true, px: 96 });
+  });
+
+  it("tablet's effective value cascades: md: wins over the base if present", () => {
+    expect(readResponsiveProperty("h-24 md:h-20", height, "tablet")).toEqual({ available: true, px: 80 });
+  });
+
+  it("tablet falls back to the base value when no md:/sm: override exists", () => {
+    expect(readResponsiveProperty("h-24 lg:h-16", height, "tablet")).toEqual({ available: true, px: 96 });
+  });
+
+  it("desktop's effective value cascades through md: when no lg:/xl: override exists — a real browser would render md: at desktop width too", () => {
+    expect(readResponsiveProperty("h-24 md:h-20", height, "desktop")).toEqual({ available: true, px: 80 });
+  });
+
+  it("desktop prefers lg: over md: when both exist", () => {
+    expect(readResponsiveProperty("h-24 md:h-20 lg:h-16", height, "desktop")).toEqual({ available: true, px: 64 });
+  });
+
+  it("editing mobile modifies the BASE utility and leaves md:/lg: overrides completely untouched — the user's exact worked example", () => {
+    const result = writeResponsiveProperty("h-24 md:h-20 lg:h-16", height, 32, "mobile");
+    expect(result).toEqual({ ok: true, classList: "h-8 md:h-20 lg:h-16" });
+  });
+
+  it("editing tablet modifies exactly the md: override, not the base or lg:", () => {
+    const result = writeResponsiveProperty("h-24 md:h-20 lg:h-16", height, 28, "tablet");
+    expect(result).toEqual({ ok: true, classList: "h-24 md:h-7 lg:h-16" });
+  });
+
+  it("editing desktop modifies exactly the lg: override, even though md: is what currently cascades to desktop width", () => {
+    // Desktop reads as 80px here (md: cascades up, see the read test above)
+    // but editing desktop must NOT touch md: — it creates/modifies lg:
+    // specifically, per the tier's own direct mapping, never "whichever
+    // breakpoint currently happens to govern this width."
+    const result = writeResponsiveProperty("h-24 md:h-20", height, 48, "desktop");
+    expect(result).toEqual({ ok: true, classList: "h-24 md:h-20 lg:h-12" });
+  });
+
+  it("editing tablet when no md: exists yet creates one, leaving the base and any lg: untouched", () => {
+    const result = writeResponsiveProperty("h-24 lg:h-16", height, 40, "tablet");
+    expect(result).toEqual({ ok: true, classList: "h-24 lg:h-16 md:h-10" });
+  });
+
+  it("the padding conflictsWith guard still applies at the base level for a responsive write", () => {
+    const result = writeResponsiveProperty("px-6 py-3", padding, 32, "tablet");
+    expect(result).toEqual({ ok: false, reason: expect.stringContaining("px-/py-") });
   });
 });

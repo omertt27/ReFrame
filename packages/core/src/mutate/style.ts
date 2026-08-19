@@ -21,7 +21,10 @@ export function writeStyleProperty(ir: StyleIR, cssProperty: string, px: number)
       return { ok: false, reason: `"${cssProperty}" is unsupported, refusing to guess: ${existing.reason}` };
     }
     if (existing.kind === "color") {
-      return { ok: false, reason: `"${cssProperty}" is a color value ("${existing.value}"), not a dimension` };
+      return {
+        ok: false,
+        reason: `"${cssProperty}" is set to a non-numeric string ("${existing.value}"), not a plain px dimension`,
+      };
     }
     if (existing.negated && px > 0) {
       return {

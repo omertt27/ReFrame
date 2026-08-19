@@ -8,6 +8,7 @@ import { createPatch } from "diff";
 
 import {
   applyClassMutation,
+  duplicateElement,
   EDITABLE_PROPERTIES,
   extractClassAttr,
   extractClassIR,
@@ -18,8 +19,9 @@ import {
   listPageRoutes,
   moveChild,
   pageSectionOrder,
+  removeElement,
   printFile,
-  readProperty,
+  readResponsiveProperty,
   readStyleObjectColor,
   readStyleObjectProperty,
   resolveAllUsages,
@@ -28,7 +30,7 @@ import {
   resolveDefinitionByFile,
   resolveElementPath,
   routeToPageFile,
-  writeProperty,
+  writeResponsiveProperty,
   writeStyleColor,
   writeStyleProperty,
   writeTextContent,
@@ -37,6 +39,7 @@ import {
   type PropertyDef,
   type StyleAttrRef,
   type StyleIR,
+  type ViewportTier,
 } from "@reframe/core";
 
 import { pushHistory, redo, undo } from "./history.js";
@@ -71,6 +74,107 @@ function routeDisplayName(route: string): string {
     .filter(Boolean)
     .map((s) => s[0]!.toUpperCase() + s.slice(1))
     .join(" / ");
+}
+
+// Small, real-world-driven word overrides for titleCasing a route segment
+// — "pdf" showing up as "Pdf" everywhere reads wrong on a project whose
+// entire domain is PDFs; kept as a tiny table rather than a general
+// acronym detector, extend as real projects surface more of these.
+const SEGMENT_WORD_OVERRIDES: Record<string, string> = { pdf: "PDF" };
+
+/** A Next.js route-group segment — `(marketing)`, `(seo)` — organizes files
+ * on disk but never appears in the actual URL, so it should never appear
+ * in a human-facing page name either. */
+function isRouteGroupSegment(segment: string): boolean {
+  return segment.startsWith("(") && segment.endsWith(")");
+}
+
+/** A dynamic segment — `[slug]`, `[id]`, `[[...sign-in]]` — represents a
+ * template shared by however many real pages match it at runtime, not one
+ * specific page; "Template" says that plainly instead of leaking the raw
+ * param name or bracket syntax into the UI. */
+function isDynamicSegment(segment: string): boolean {
+  return segment.startsWith("[");
+}
+
+function titleCaseSegment(segment: string): string {
+  return segment
+    .split("-")
+    .filter(Boolean)
+    .map((word) => SEGMENT_WORD_OVERRIDES[word.toLowerCase()] ?? word[0]!.toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/** The segments of a route that are actually meaningful to show a person —
+ * route groups dropped entirely (they don't affect the URL, shouldn't
+ * affect the displayed hierarchy either), dynamic segments collapsed to a
+ * single "Template" entry. `/(seo)/[slug]` -> ["Template"]; `/guides/how-to`
+ * -> ["Guides", "How To"]. */
+function displaySegments(route: string): string[] {
+  const raw = route.split("/").filter(Boolean);
+  const out: string[] = [];
+  for (const segment of raw) {
+    if (isRouteGroupSegment(segment)) continue;
+    out.push(isDynamicSegment(segment) ? "Template" : titleCaseSegment(segment));
+  }
+  return out;
+}
+
+interface PageTreeNode {
+  kind: "page";
+  route: string;
+  label: string;
+  pageComponent: string;
+  sections: string[];
+}
+interface GroupTreeNode {
+  kind: "group";
+  label: string;
+  children: PageTreeNode[];
+}
+
+/** Groups a flat page list into a shallow (one level) tree, purely from
+ * the real route structure — never a second, hand-maintained hierarchy.
+ * Pages sharing the same first real (non-route-group) segment become a
+ * collapsible group named after that segment (its own index page, if one
+ * exists at exactly that path, sorts first inside the group); anything
+ * alone at its first segment stays a flat top-level entry — a group of
+ * one is just noise. Verified against PrivaPDF's real route list: only
+ * `/guides/*` (30+ real pages) actually benefits from grouping; everything
+ * else here is naturally flat, and stays flat rather than being nested for
+ * the sake of it. */
+function buildPageTree(pages: PageTreeNode[]): (PageTreeNode | GroupTreeNode)[] {
+  const firstSegment = new Map<string, PageTreeNode[]>();
+  const order: string[] = [];
+  for (const page of pages) {
+    const segs = displaySegments(page.route);
+    const key = segs.length > 0 ? segs[0]! : "";
+    if (!firstSegment.has(key)) {
+      firstSegment.set(key, []);
+      order.push(key);
+    }
+    firstSegment.get(key)!.push(page);
+  }
+
+  const result: (PageTreeNode | GroupTreeNode)[] = [];
+  for (const key of order) {
+    const group = firstSegment.get(key)!;
+    if (key === "" || group.length === 1) {
+      result.push(...group);
+      continue;
+    }
+    // The group's own index page (route segments === [key], e.g. "/guides"
+    // itself among "/guides/*") sorts first; the rest keep their natural
+    // (already alphabetical-by-route) order.
+    const sorted = [...group].sort((a, b) => {
+      const aIsIndex = displaySegments(a.route).length === 1;
+      const bIsIndex = displaySegments(b.route).length === 1;
+      if (aIsIndex === bIsIndex) return 0;
+      return aIsIndex ? -1 : 1;
+    });
+    result.push({ kind: "group", label: key, children: sorted });
+  }
+  return result;
 }
 
 /** Which ternary branch a specific prop value resolves to — the same rule
@@ -115,7 +219,7 @@ type Backend = "tailwind" | "style";
 
 interface PropertyReadInfo {
   available: boolean;
-  kind: "dimension" | "color";
+  kind: "dimension" | "color" | "text";
   px?: number | null;
   value?: string | null;
   reason?: string;
@@ -151,6 +255,7 @@ function readDimensionValue(
   classList: string | null,
   styleIR: StyleIR | null,
   classUnsupportedReason: string | null,
+  tier: ViewportTier,
 ): PropertyReadInfo {
   // Typography dimensions (fontSize/fontWeight/lineHeight/letterSpacing)
   // have no Tailwind mapping at all — Tailwind's own utilities for these
@@ -176,7 +281,7 @@ function readDimensionValue(
   if (fromStyle?.available && fromStyle.px !== null) {
     return { available: true, kind: "dimension", px: fromStyle.px, backend: "style" };
   }
-  const fromTailwind = prop.prefix && classList !== null ? readProperty(classList, prop) : null;
+  const fromTailwind = prop.prefix && classList !== null ? readResponsiveProperty(classList, prop, tier) : null;
   if (fromTailwind?.available && fromTailwind.px !== null) {
     return { available: true, kind: "dimension", px: fromTailwind.px, backend: "tailwind" };
   }
@@ -208,24 +313,33 @@ function readColorValue(
   styleIR: StyleIR | null,
   classUnsupportedReason: string | null,
 ): PropertyReadInfo {
+  // `valueKind` is "color" or "text" for anything routed here — both share
+  // the exact same free-form-string read/write path (see PropertyValueKind's
+  // doc comment), this just tags each result with the right one so the
+  // client can tell a swatch-worthy value apart from a font-family value.
+  const kind = prop.valueKind === "text" ? "text" : "color";
   if (classList !== null && prop.prefix && hasTailwindColorUtility(classList, prop.prefix)) {
     const existing = findUtilityClass(classList, prop.prefix);
     return {
       available: false,
-      kind: "color",
+      kind,
       reason: `already set via a Tailwind utility class ("${existing}") — editing Tailwind color utilities isn't supported yet, only inline style colors`,
     };
   }
   const fromStyle = styleIR ? readStyleObjectColor(styleIR, prop) : null;
   if (fromStyle?.available && fromStyle.value !== null) {
-    return { available: true, kind: "color", value: fromStyle.value, backend: "style" };
+    return { available: true, kind, value: fromStyle.value, backend: "style" };
   }
-  if (fromStyle && !fromStyle.available) return { available: false, kind: "color", reason: fromStyle.reason };
-  if (styleIR) return { available: true, kind: "color", value: null, backend: "style" };
+  if (fromStyle && !fromStyle.available) return { available: false, kind, reason: fromStyle.reason };
+  if (styleIR) return { available: true, kind, value: null, backend: "style" };
   return {
     available: false,
-    kind: "color",
-    reason: classUnsupportedReason ?? "no inline style on this element to add a color to — Tailwind color utilities aren't editable yet",
+    kind,
+    reason:
+      classUnsupportedReason ??
+      (kind === "color"
+        ? "no inline style on this element to add a color to — Tailwind color utilities aren't editable yet"
+        : "no inline style on this element to add a font to yet"),
   };
 }
 
@@ -267,8 +381,19 @@ function hexToRgb(hex: string): string | null {
  * the predicted value's form can't be reliably normalized (any color that
  * isn't a plain hex string).
  */
-function crossCheckAgainstComputed(kind: "dimension" | "color", predicted: number | string, computedRaw: string): boolean | null {
-  if (kind === "color") {
+function crossCheckAgainstComputed(
+  kind: "dimension" | "color" | "text",
+  predicted: number | string,
+  computedRaw: string,
+): boolean | null {
+  if (kind !== "dimension") {
+    // "text" (fontFamily) is structurally the same "can't reliably verify a
+    // non-hex string against computed style" case color already handles —
+    // getComputedStyle normalizes font stacks (quoting, fallback order) in
+    // ways that would produce false-positive mismatches on a naive string
+    // compare, so this returns null ("can't verify, don't guess") for
+    // anything that isn't a plain hex color, which every fontFamily value
+    // naturally falls into.
     const predictedRgb = hexToRgb(String(predicted));
     if (!predictedRgb) return null;
     return predictedRgb === computedRaw;
@@ -306,6 +431,7 @@ function readCurrentProperties(
   styleAttr: StyleAttrRef | null,
   usageProps: Record<string, string> | null,
   computedStyle: Record<string, string> | null,
+  tier: ViewportTier,
 ) {
   if (!classAttr && !styleAttr) {
     return { editable: false as const, reason: "no className or style found on this element" };
@@ -339,11 +465,32 @@ function readCurrentProperties(
   }
   const styleIR = styleAttr ? extractStyleIR(styleAttr.attrNode) : null;
 
+  // CSS structurally ignores width/height on an inline element (only
+  // block, inline-block, flex/grid, and similar box-generating display
+  // types respect them) — no value ReFrame could ever write there would
+  // visually apply. Found live: a real drag-resize on an inline `<em>`
+  // wrote a new width/height on every drag, always "succeeded" as far as
+  // the source edit went, and the post-write safety net caught a mismatch
+  // EVERY single time — technically correct, but a bad experience (drag,
+  // get a scary warning, repeat). Refusing width/height up front here
+  // (before any drag is even possible — see host.html's resize-handle
+  // visibility, gated on this same availability) is strictly better than
+  // catching it after the fact.
+  const isInlineDisplay = computedStyle?.display === "inline";
+
   const values: Record<string, PropertyReadInfo> = {};
   for (const prop of EDITABLE_PROPERTIES) {
+    if (isInlineDisplay && (prop.key === "width" || prop.key === "height")) {
+      values[prop.key] = {
+        available: false,
+        kind: "dimension",
+        reason: "this element is inline — CSS ignores width and height on inline elements",
+      };
+      continue;
+    }
     const info =
       prop.valueKind === "dimension"
-        ? readDimensionValue(prop, classList, styleIR, classUnsupportedReason)
+        ? readDimensionValue(prop, classList, styleIR, classUnsupportedReason, tier)
         : readColorValue(prop, classList, styleIR, classUnsupportedReason);
 
     const predicted = info.available ? (info.kind === "dimension" ? info.px : info.value) : null;
@@ -397,20 +544,21 @@ function applyTailwindPropertyEdit(
   branch: "consequent" | "alternate" | null,
   prop: PropertyDef,
   px: number,
+  tier: ViewportTier,
 ): number | null {
   const fresh = extractClassIR(classAttr.attrNode);
   if (branch) {
     if (!fresh || fresh.kind !== "ternary") throw new Error("Expected a ternary className");
     const current = branch === "consequent" ? fresh.consequent : fresh.alternate;
-    const before = readProperty(current, prop);
-    const result = writeProperty(current, prop, px);
+    const before = readResponsiveProperty(current, prop, tier);
+    const result = writeResponsiveProperty(current, prop, px, tier);
     if (!result.ok) throw new Error(result.reason);
     applyClassMutation({ attrNode: classAttr.attrNode, ir: fresh }, { op: "setBranch", branch, value: result.classList });
     return before.available ? before.px : null;
   }
   if (!fresh || fresh.kind !== "string") throw new Error("Expected a plain string className");
-  const before = readProperty(fresh.value, prop);
-  const result = writeProperty(fresh.value, prop, px);
+  const before = readResponsiveProperty(fresh.value, prop, tier);
+  const result = writeResponsiveProperty(fresh.value, prop, px, tier);
   if (!result.ok) throw new Error(result.reason);
   applyClassMutation({ attrNode: classAttr.attrNode, ir: fresh }, { op: "setString", value: result.classList });
   return before.available ? before.px : null;
@@ -432,7 +580,7 @@ function applyTailwindPropertyEdit(
  * onto the first plain-string argument (the conventional "base classes"
  * position) — refuses rather than guessing if there isn't one.
  */
-function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: number): number | null {
+function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: number, tier: ViewportTier): number | null {
   const fresh = extractClassIR(classAttr.attrNode);
   if (!fresh || fresh.kind !== "clsxCall") throw new Error("Expected a clsx()/cn() call");
   if (fresh.args === null) {
@@ -449,8 +597,8 @@ function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: n
   }
 
   const arg = fresh.args[targetIndex]!;
-  const before = readProperty(arg.value, prop);
-  const result = writeProperty(arg.value, prop, px);
+  const before = readResponsiveProperty(arg.value, prop, tier);
+  const result = writeResponsiveProperty(arg.value, prop, px, tier);
   if (!result.ok) throw new Error(result.reason);
   applyClassMutation({ attrNode: classAttr.attrNode, ir: fresh }, { op: "setClsxArg", index: targetIndex, value: result.classList });
   return before.available ? before.px : null;
@@ -516,13 +664,21 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     }
 
     if (req.method === "GET" && req.url === "/__reframe/tree") {
-      const pages = listPageRoutes(graph).map(({ route, pageComponent }) => ({
-        route,
-        label: routeDisplayName(route),
-        pageComponent,
-        sections: (pageSectionOrder(graph, route) ?? []).map((s) => s.name),
-      }));
-      sendJson(res, 200, pages);
+      const flat: PageTreeNode[] = listPageRoutes(graph).map(({ route, pageComponent }) => {
+        const segs = displaySegments(route);
+        return {
+          kind: "page",
+          route,
+          // Just the page's OWN name, not the full "Guides / How To"
+          // breadcrumb routeDisplayName used to produce — that framing
+          // belongs to the tree structure now (grouping already says
+          // "this is inside Guides"), not to every individual label.
+          label: segs.length > 0 ? segs[segs.length - 1]! : "Home",
+          pageComponent,
+          sections: (pageSectionOrder(graph, route) ?? []).map((s) => s.name),
+        };
+      });
+      sendJson(res, 200, buildPageTree(flat));
       return;
     }
 
@@ -554,13 +710,15 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/resolve") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, path, elementTag, computedStyle } = body as {
+          const { component, route, path, elementTag, computedStyle, viewport } = body as {
             component?: string;
             route?: string;
             path?: number[];
             elementTag?: string;
             computedStyle?: Record<string, string>;
+            viewport?: ViewportTier;
           };
+          const tier: ViewportTier = viewport ?? "desktop";
           if (!component || typeof route !== "string") {
             sendJson(res, 400, { ok: false, error: "expected { component, route }" });
             return;
@@ -623,7 +781,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             breadcrumb = breadcrumbFor(def.rootElement, path!);
           }
 
-          const properties = readCurrentProperties(classAttr, styleAttr, props, computedStyle ?? null);
+          const properties = readCurrentProperties(classAttr, styleAttr, props, computedStyle ?? null, tier);
           const textIR = extractTextIR(target);
           const text =
             textIR.kind === "text" ? { editable: true as const, value: textIR.value } : { editable: false as const, reason: textIR.reason };
@@ -648,7 +806,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/mutate") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, scope, property, px, value, backend, path } = body as {
+          const { component, route, scope, property, px, value, backend, path, viewport } = body as {
             component?: string;
             route?: string;
             scope?: "instance" | "all";
@@ -657,11 +815,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             value?: string;
             backend?: Backend;
             path?: number[];
+            viewport?: ViewportTier;
           };
           if (!component || !route || !scope || !property || !backend || (typeof px !== "number" && typeof value !== "string")) {
             sendJson(res, 400, { ok: false, error: "expected { component, route, scope, property, backend, px } or { ..., value }" });
             return;
           }
+          const tier: ViewportTier = viewport ?? "desktop";
           try {
             const def = resolveDefinition(graph, component);
             const propDef = EDITABLE_PROPERTIES.find((p) => p.key === property);
@@ -684,8 +844,8 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             // barely share any logic once you're past "resolve the style
             // attr" (see readColorValue's doc comment for why Tailwind
             // color classes are refused rather than written).
-            if (propDef.valueKind === "color") {
-              if (typeof value !== "string") throw new Error(`"${property}" is a color property — expected { value }`);
+            if (propDef.valueKind === "color" || propDef.valueKind === "text") {
+              if (typeof value !== "string") throw new Error(`"${property}" is a text-valued property — expected { value }`);
               const styleAttr = hasPath ? extractStyleAttr(targetNode) : def.styleAttr;
               if (!styleAttr) throw new Error(`"${component}" has no editable inline style`);
               const beforeValue = applyStyleColorEdit(styleAttr, propDef, value);
@@ -734,7 +894,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 // there's nothing to iterate: a clsx() call has exactly one
                 // relevant argument per edit, not a consequent/alternate
                 // pair.
-                beforePx = applyClsxPropertyEdit(classAttr, propDef, px);
+                beforePx = applyClsxPropertyEdit(classAttr, propDef, px, tier);
                 branches = [];
               } else {
                 // Every other ClassIR kind is handled above (string/ternary/
@@ -742,13 +902,18 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 throw new Error(`className is unsupported: ${fresh.reason}`);
               }
               branches.forEach((branch, i) => {
-                const px0 = applyTailwindPropertyEdit(classAttr, branch, propDef, px);
+                const px0 = applyTailwindPropertyEdit(classAttr, branch, propDef, px, tier);
                 if (i === 0) beforePx = px0;
               });
               scopeLabel = !hasPath && scope === "all" ? "all usages" : "this instance";
             }
 
-            const description = `${component} ${propDef.label}: ${beforePx !== null ? beforePx + "px" : "not set"} → ${px}px (${scopeLabel}, ${backend})`;
+            // The viewport tier only means anything for a Tailwind write —
+            // an inline style has no responsive variant, so tagging a style
+            // edit with "(mobile)" would falsely imply it only applies
+            // there.
+            const tierLabel = backend === "tailwind" && tier !== "desktop" ? `, ${tier}` : "";
+            const description = `${component} ${propDef.label}: ${beforePx !== null ? beforePx + "px" : "not set"} → ${px}px (${scopeLabel}, ${backend}${tierLabel})`;
             const { diff } = recordAndWrite(state, def.filePath, before, description);
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
@@ -785,6 +950,94 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             if (!result.ok) throw new Error(result.reason);
 
             const description = `${component} text: "${truncate(beforeValue ?? "")}" → "${truncate(value)}"`;
+            const { diff } = recordAndWrite(state, def.filePath, before, description);
+
+            sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
+          } catch (err) {
+            sendJson(res, 200, { ok: false, error: (err as Error).message });
+          }
+        })
+        .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__reframe/delete") {
+      readJsonBody(req)
+        .then((body) => {
+          const { component, route, path } = body as {
+            component?: string;
+            route?: string;
+            path?: number[];
+          };
+          if (!component || typeof route !== "string") {
+            sendJson(res, 400, { ok: false, error: "expected { component, route, path }" });
+            return;
+          }
+          // Deleting a component's own root (path: [] or absent) would mean
+          // removing everything that component ever renders, from a click
+          // inside it — a fundamentally different, much larger operation
+          // ("delete this component everywhere it's used") than "remove
+          // this one nested element," and not one a single click on the
+          // canvas should be able to trigger by accident. Refused, not
+          // guessed at.
+          if (!Array.isArray(path) || path.length === 0) {
+            sendJson(res, 200, { ok: false, error: "Can't delete a component's own root from here — only a nested element." });
+            return;
+          }
+          try {
+            const def = resolveDefinition(graph, component);
+            const parent = resolveElementPath(def.rootElement, path.slice(0, -1));
+            if (!parent) throw new Error("This element can't currently be edited safely.");
+            const target = resolveElementPath(def.rootElement, path);
+            if (!target) throw new Error("This element can't currently be edited safely.");
+            const label = elementTagName(target) ?? "element";
+
+            const before = printFile(graph, def.filePath);
+            removeElement(parent, path[path.length - 1]!);
+            const description = `${component}: removed <${label}>`;
+            const { diff } = recordAndWrite(state, def.filePath, before, description);
+
+            sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
+          } catch (err) {
+            sendJson(res, 200, { ok: false, error: (err as Error).message });
+          }
+        })
+        .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/__reframe/duplicate") {
+      readJsonBody(req)
+        .then((body) => {
+          const { component, route, path } = body as {
+            component?: string;
+            route?: string;
+            path?: number[];
+          };
+          if (!component || typeof route !== "string") {
+            sendJson(res, 400, { ok: false, error: "expected { component, route, path }" });
+            return;
+          }
+          // Same restriction as delete — duplicating a component's own root
+          // isn't "add another instance of this element," it's "add another
+          // usage of this whole component wherever it's rendered," a
+          // different and much larger operation than a click on the canvas
+          // should trigger.
+          if (!Array.isArray(path) || path.length === 0) {
+            sendJson(res, 200, { ok: false, error: "Can't duplicate a component's own root from here — only a nested element." });
+            return;
+          }
+          try {
+            const def = resolveDefinition(graph, component);
+            const parent = resolveElementPath(def.rootElement, path.slice(0, -1));
+            if (!parent) throw new Error("This element can't currently be edited safely.");
+            const target = resolveElementPath(def.rootElement, path);
+            if (!target) throw new Error("This element can't currently be edited safely.");
+            const label = elementTagName(target) ?? "element";
+
+            const before = printFile(graph, def.filePath);
+            duplicateElement(parent, path[path.length - 1]!);
+            const description = `${component}: duplicated <${label}>`;
             const { diff } = recordAndWrite(state, def.filePath, before, description);
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
