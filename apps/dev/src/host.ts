@@ -152,17 +152,45 @@ function readDimensionValue(
   styleIR: StyleIR | null,
   classUnsupportedReason: string | null,
 ): PropertyReadInfo {
-  const fromTailwind = classList !== null ? readProperty(classList, prop) : null;
-  if (fromTailwind?.available && fromTailwind.px !== null) {
-    return { available: true, kind: "dimension", px: fromTailwind.px, backend: "tailwind" };
-  }
+  // Typography dimensions (fontSize/fontWeight/lineHeight/letterSpacing)
+  // have no Tailwind mapping at all — Tailwind's own utilities for these
+  // are keyword-based scales (font-bold, leading-relaxed, tracking-tight),
+  // not the numeric spacing scale h-/w-/p- use, so there's nothing for
+  // readProperty to map to. Skip Tailwind entirely when a property has no
+  // prefix, rather than calling into readProperty (which throws for
+  // exactly this case) just because the element happens to have SOME
+  // unrelated className — very common in this codebase (e.g.
+  // `className="nav-root"` alongside inline styles).
+  //
+  // STYLE IS CHECKED FIRST — this order matters and was previously
+  // backwards. Inline `style` always wins the CSS cascade over any class
+  // selector, Tailwind utilities included, regardless of specificity or
+  // stylesheet order. Verified live against PrivaPDF (className="... p-4"
+  // + style={{padding: 32}} on the same element): the browser renders
+  // 32px, but with Tailwind checked first this function reported 16 as the
+  // "current" value — a real, confirmed bug, not a hypothetical (see
+  // project memory `reframe-stress-test-responsive-css`). Checking style
+  // first means the reported value always matches what the browser
+  // actually shows whenever both backends happen to set the same property.
   const fromStyle = styleIR ? readStyleObjectProperty(styleIR, prop) : null;
   if (fromStyle?.available && fromStyle.px !== null) {
     return { available: true, kind: "dimension", px: fromStyle.px, backend: "style" };
   }
-  if (fromTailwind && !fromTailwind.available) return { available: false, kind: "dimension", reason: fromTailwind.reason };
+  const fromTailwind = prop.prefix && classList !== null ? readProperty(classList, prop) : null;
+  if (fromTailwind?.available && fromTailwind.px !== null) {
+    return { available: true, kind: "dimension", px: fromTailwind.px, backend: "tailwind" };
+  }
   if (fromStyle && !fromStyle.available) return { available: false, kind: "dimension", reason: fromStyle.reason };
-  if (classList !== null) return { available: true, kind: "dimension", px: null, backend: "tailwind" };
+  if (fromTailwind && !fromTailwind.available) return { available: false, kind: "dimension", reason: fromTailwind.reason };
+  // Neither backend has a value set yet — this fallback (which backend a
+  // brand-new write defaults to) is a separate, unrelated question from
+  // the precedence fix above and is deliberately left as Tailwind-first
+  // when a className exists; see project memory
+  // `reframe-stress-test-responsive-css` Finding 1 for why even this
+  // default isn't fully safe (an external stylesheet rule can still
+  // silently override a newly-added Tailwind class) — that's a larger,
+  // separately-scoped architecture gap, not fixed here.
+  if (prop.prefix && classList !== null) return { available: true, kind: "dimension", px: null, backend: "tailwind" };
   if (styleIR) return { available: true, kind: "dimension", px: null, backend: "style" };
   return { available: false, kind: "dimension", reason: classUnsupportedReason ?? "no editable style found" };
 }
@@ -201,6 +229,55 @@ function readColorValue(
   };
 }
 
+/** "#3B82F6" -> "rgb(59, 130, 246)" — matches getComputedStyle's own output
+ * format exactly (browsers always normalize computed color to rgb()/
+ * rgba(), regardless of source syntax). Plain arithmetic, mirrored
+ * (intentionally, not shared) in preload.js's client-side copy of this
+ * same function. Named colors and var() references are NOT normalized
+ * here — there's no DOM/canvas available server-side to resolve those
+ * reliably — callers treat that as "can't verify," not "mismatch." */
+function hexToRgb(hex: string): string | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  let h = m[1]!;
+  if (h.length === 3) h = h[0]! + h[0]! + h[1]! + h[1]! + h[2]! + h[2]!;
+  const r = Number.parseInt(h.slice(0, 2), 16);
+  const g = Number.parseInt(h.slice(2, 4), 16);
+  const b = Number.parseInt(h.slice(4, 6), 16);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+/**
+ * The external-CSS safety net: cross-checks a value the source PREDICTS
+ * against what the browser ACTUALLY rendered (reported by preload.js
+ * alongside the click, from `getComputedStyle` on the real DOM node).
+ * Verified live against PrivaPDF's real `<nav className="nav-root">`:
+ * ReFrame previously reported a successful padding edit while the
+ * rendered page never changed — an external CSS rule for `.nav-root`,
+ * invisible to this source model, silently won the cascade (see project
+ * memory `reframe-stress-test-responsive-css`, Finding 1). Rather than try
+ * to guess which class names might be "custom" (rejected — a healthy
+ * Tailwind-heavy element has dozens of utility classes this engine
+ * doesn't specifically recognize, like `flex`/`rounded-lg`/`shadow-md`;
+ * flagging those as suspicious would produce false refusals on perfectly
+ * safe elements), this compares against ground truth instead: the actual
+ * browser. Generalizes to every cause (external CSS, CSS Modules,
+ * `!important`, specificity) without needing to know which one applies.
+ * Returns null — "can't verify, don't guess" — rather than false whenever
+ * the predicted value's form can't be reliably normalized (any color that
+ * isn't a plain hex string).
+ */
+function crossCheckAgainstComputed(kind: "dimension" | "color", predicted: number | string, computedRaw: string): boolean | null {
+  if (kind === "color") {
+    const predictedRgb = hexToRgb(String(predicted));
+    if (!predictedRgb) return null;
+    return predictedRgb === computedRaw;
+  }
+  const actual = Number.parseFloat(computedRaw);
+  if (Number.isNaN(actual)) return false; // e.g. "normal" when a value was predicted
+  return Math.abs(actual - Number(predicted)) < 0.5;
+}
+
 /**
  * Reads every editable property's current value across BOTH style backends
  * for one root element — the Style IR dispatch the real-world stress test
@@ -212,11 +289,23 @@ function readColorValue(
  * mutate/style.ts and mutate/tailwind.ts's own guards for the enforcement.
  * Color properties dispatch through readColorValue instead — a different
  * value shape (a string, not a px number), see PropertyDef.valueKind.
+ *
+ * When `computedStyle` is provided (the browser's actual rendered values
+ * for this element, sent by preload.js), every property that reads back
+ * `available: true` with a real value is cross-checked against it via
+ * crossCheckAgainstComputed — a definite mismatch overrides the result to
+ * unavailable with an explicit reason, rather than showing (and inviting
+ * an edit built on) a value the page doesn't actually display. Only
+ * applies to values already predicted from the source; the "not set
+ * anywhere yet" fallback has nothing to cross-check against here — that
+ * risk (a brand-new write silently losing to something invisible) is
+ * caught after the fact instead, by the /mutate post-write verification.
  */
 function readCurrentProperties(
   classAttr: ClassAttrRef | null,
   styleAttr: StyleAttrRef | null,
   usageProps: Record<string, string> | null,
+  computedStyle: Record<string, string> | null,
 ) {
   if (!classAttr && !styleAttr) {
     return { editable: false as const, reason: "no className or style found on this element" };
@@ -230,18 +319,66 @@ function readCurrentProperties(
     else if (fresh?.kind === "ternary") {
       const branch = branchForValue(fresh, usageProps?.[fresh.propName]);
       classList = branch === "consequent" ? fresh.consequent : fresh.alternate;
+    } else if (fresh?.kind === "clsxCall" && fresh.args !== null) {
+      // Every argument's string is a candidate — a conditional arg
+      // (`test && "..."`) might not always be active, but this is a READ
+      // only; findUtilityClass just needs to know a token exists somewhere
+      // to report it, and the external-CSS cross-check (readCurrentProperties's
+      // caller) already catches a value that doesn't match what's actually
+      // rendered, whatever the reason. Which specific argument a WRITE
+      // lands in is decided separately, per-write, in applyClsxPropertyEdit.
+      classList = fresh.args.map((a) => a.value).join(" ");
     } else {
-      classUnsupportedReason = fresh?.kind === "unsupported" ? fresh.reason : "className shape isn't a plain string or ternary";
+      classUnsupportedReason =
+        fresh?.kind === "unsupported"
+          ? fresh.reason
+          : fresh?.kind === "clsxCall"
+            ? `${fresh.calleeName}() has argument shapes that aren't recognized`
+            : "className shape isn't a plain string, ternary, or clsx()/cn() call";
     }
   }
   const styleIR = styleAttr ? extractStyleIR(styleAttr.attrNode) : null;
 
   const values: Record<string, PropertyReadInfo> = {};
   for (const prop of EDITABLE_PROPERTIES) {
-    values[prop.key] =
+    const info =
       prop.valueKind === "dimension"
         ? readDimensionValue(prop, classList, styleIR, classUnsupportedReason)
         : readColorValue(prop, classList, styleIR, classUnsupportedReason);
+
+    const predicted = info.available ? (info.kind === "dimension" ? info.px : info.value) : null;
+    const computedRaw = computedStyle?.[prop.key];
+    if (predicted !== null && predicted !== undefined && computedRaw !== undefined) {
+      let matches = crossCheckAgainstComputed(info.kind, predicted, computedRaw);
+      // lineHeight is the one property with a genuinely dual CSS meaning: a
+      // unitless number (React's default form for a plain JS number) is a
+      // MULTIPLIER of the element's own font-size, not an absolute pixel
+      // value — the computed style always resolves it to px regardless.
+      // Found live against PrivaPDF's real h1 (`lineHeight: 1.1`, computed
+      // "40.7px" against a ~37px font-size) as a false positive from the
+      // naive direct comparison: 1.1 was never going to equal 40.7px, yet
+      // nothing was actually wrong. No other tracked property has this
+      // ambiguity (fontSize/letterSpacing/height/width/padding are always
+      // directly comparable), so this is scoped to lineHeight specifically
+      // rather than generalized.
+      if (matches === false && prop.key === "lineHeight" && computedStyle?.fontSize) {
+        const fontSizePx = Number.parseFloat(computedStyle.fontSize);
+        if (!Number.isNaN(fontSizePx)) {
+          const asMultiplier = Number(predicted) * fontSizePx;
+          if (crossCheckAgainstComputed("dimension", asMultiplier, computedRaw) === true) matches = true;
+        }
+      }
+      if (matches === false) {
+        const predictedLabel = info.kind === "dimension" ? `${predicted}px` : String(predicted);
+        values[prop.key] = {
+          available: false,
+          kind: info.kind,
+          reason: `the source predicts ${predictedLabel}, but the page actually renders ${computedRaw} — this property may be controlled by something ReFrame can't see (external CSS, specificity, !important) and isn't safely editable here`,
+        };
+        continue;
+      }
+    }
+    values[prop.key] = info;
   }
   return { editable: true as const, values };
 }
@@ -270,6 +407,46 @@ function applyTailwindPropertyEdit(
   const result = writeProperty(fresh.value, prop, px);
   if (!result.ok) throw new Error(result.reason);
   applyClassMutation({ attrNode: classAttr.attrNode, ir: fresh }, { op: "setString", value: result.classList });
+  return before.available ? before.px : null;
+}
+
+/**
+ * The clsx()/cn() counterpart to applyTailwindPropertyEdit — class-ir.ts
+ * already extracts a clsxCall's arguments (string literals and
+ * `test && "class"` conditionals) and mutate/class.ts already has a
+ * "setClsxArg" op to edit one argument's string in place, but neither was
+ * ever wired up to an actual read/write here; a clsxCall was treated
+ * identically to any unrecognized className shape. Fixed per the user's
+ * own worked example: `clsx("p-4", active && "bg-blue-500")` — each
+ * argument's string is checked INDIVIDUALLY (not the call concatenated)
+ * for the target utility, since a write can only ever touch one argument's
+ * string without restructuring the call; whichever argument has it gets
+ * edited, every other argument (the conditional included) stays untouched.
+ * If the property isn't set in any argument yet, defaults to appending it
+ * onto the first plain-string argument (the conventional "base classes"
+ * position) — refuses rather than guessing if there isn't one.
+ */
+function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: number): number | null {
+  const fresh = extractClassIR(classAttr.attrNode);
+  if (!fresh || fresh.kind !== "clsxCall") throw new Error("Expected a clsx()/cn() call");
+  if (fresh.args === null) {
+    throw new Error(
+      `${fresh.calleeName}() has argument shapes that aren't recognized (only string literals and ` +
+        '`test && "class"` conditionals are supported) — refusing to edit around what it can\'t parse',
+    );
+  }
+
+  let targetIndex = fresh.args.findIndex((a) => prop.prefix && findUtilityClass(a.value, prop.prefix));
+  if (targetIndex === -1) targetIndex = fresh.args.findIndex((a) => a.kind === "string");
+  if (targetIndex === -1) {
+    throw new Error(`${fresh.calleeName}() has no plain string argument to add "${prop.prefix}" to`);
+  }
+
+  const arg = fresh.args[targetIndex]!;
+  const before = readProperty(arg.value, prop);
+  const result = writeProperty(arg.value, prop, px);
+  if (!result.ok) throw new Error(result.reason);
+  applyClassMutation({ attrNode: classAttr.attrNode, ir: fresh }, { op: "setClsxArg", index: targetIndex, value: result.classList });
   return before.available ? before.px : null;
 }
 
@@ -371,11 +548,12 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/resolve") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, path, elementTag } = body as {
+          const { component, route, path, elementTag, computedStyle } = body as {
             component?: string;
             route?: string;
             path?: number[];
             elementTag?: string;
+            computedStyle?: Record<string, string>;
           };
           if (!component || typeof route !== "string") {
             sendJson(res, 400, { ok: false, error: "expected { component, route }" });
@@ -439,7 +617,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             breadcrumb = breadcrumbFor(def.rootElement, path!);
           }
 
-          const properties = readCurrentProperties(classAttr, styleAttr, props);
+          const properties = readCurrentProperties(classAttr, styleAttr, props, computedStyle ?? null);
           const textIR = extractTextIR(target);
           const text =
             textIR.kind === "text" ? { editable: true as const, value: textIR.value } : { editable: false as const, reason: textIR.reason };
@@ -544,8 +722,18 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                   }
                   branches = [branchForValue(fresh, usage.props[fresh.propName])];
                 }
+              } else if (fresh.kind === "clsxCall") {
+                // Not a ternary-branch shape at all — applied directly,
+                // below the forEach the ternary/string cases use, since
+                // there's nothing to iterate: a clsx() call has exactly one
+                // relevant argument per edit, not a consequent/alternate
+                // pair.
+                beforePx = applyClsxPropertyEdit(classAttr, propDef, px);
+                branches = [];
               } else {
-                throw new Error(`className is unsupported: ${fresh.kind === "unsupported" ? fresh.reason : fresh.kind}`);
+                // Every other ClassIR kind is handled above (string/ternary/
+                // clsxCall) — the only one left here is "unsupported".
+                throw new Error(`className is unsupported: ${fresh.reason}`);
               }
               branches.forEach((branch, i) => {
                 const px0 = applyTailwindPropertyEdit(classAttr, branch, propDef, px);

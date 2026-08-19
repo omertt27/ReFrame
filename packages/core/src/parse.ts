@@ -42,6 +42,21 @@ function findReturnedJsx(body: t.BlockStatement): t.JSXElement | t.JSXFragment |
   return null;
 }
 
+/**
+ * The arrow/function-expression counterpart to findReturnedJsx — a
+ * function's body is either a block (`{ return <jsx>; }`, searched the
+ * same way) or, for an arrow function specifically, the JSX directly
+ * (`() => <jsx>`, React's common implicit-return shorthand — verified as
+ * real and common via a second real-world project, Excalidraw, where it
+ * accounts for a meaningful share of components; see project memory
+ * `reframe-second-project-comparison`).
+ */
+function findComponentJsx(body: t.BlockStatement | t.Expression): t.JSXElement | t.JSXFragment | null {
+  if (t.isBlockStatement(body)) return findReturnedJsx(body);
+  if (t.isJSXElement(body) || t.isJSXFragment(body)) return body;
+  return null;
+}
+
 function findAttr(root: t.JSXElement | t.JSXFragment, attrName: string): t.JSXAttribute | null {
   if (!t.isJSXElement(root)) return null; // fragments can't carry attributes
   return (
@@ -98,8 +113,30 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
     });
   }
 
-  // Pass 1: component definitions — top-level function declarations whose
-  // name is capitalized and whose body returns JSX.
+  // Pass 1: component definitions — a capitalized name, function body
+  // returning JSX, in either of React's two common declaration shapes:
+  // `function X() {}` (FunctionDeclaration) or `const X = (...) => {}` /
+  // `const X = function (...) {}` (an arrow/function expression assigned
+  // to a const). The second shape was completely unrecognized before —
+  // found and fixed via a real-world comparison against a second project
+  // (Excalidraw) that uses it almost exclusively; see project memory
+  // `reframe-second-project-comparison` for how stark the gap was (68/68
+  // FunctionDeclaration in PrivaPDF vs 68/86 arrow-const in Excalidraw).
+  // Deliberately still NOT handling forwardRef-wrapped components
+  // (`const X = forwardRef((props, ref) => {...})`) — a real but distinct,
+  // less common shape (8/86 files in that same comparison), left for a
+  // separate pass rather than folded into this fix.
+  function registerDefinition(name: string, filePath: string, rootElement: t.JSXElement | t.JSXFragment) {
+    definitions.set(name, {
+      name,
+      filePath,
+      rootElement,
+      classAttr: extractClassAttr(rootElement),
+      styleAttr: extractStyleAttr(rootElement),
+      isDefaultExport: defaultExportByFile.get(filePath) === name,
+    });
+  }
+
   for (const [filePath, { ast }] of parsedFiles) {
     traverse(ast, {
       FunctionDeclaration(path) {
@@ -107,14 +144,16 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
         if (!name || !/^[A-Z]/.test(name)) return;
         const rootElement = findReturnedJsx(path.node.body);
         if (!rootElement) return;
-        definitions.set(name, {
-          name,
-          filePath,
-          rootElement,
-          classAttr: extractClassAttr(rootElement),
-          styleAttr: extractStyleAttr(rootElement),
-          isDefaultExport: defaultExportByFile.get(filePath) === name,
-        });
+        registerDefinition(name, filePath, rootElement);
+      },
+      VariableDeclarator(path) {
+        const id = path.node.id;
+        if (!t.isIdentifier(id) || !/^[A-Z]/.test(id.name)) return;
+        const init = path.node.init;
+        if (!init || !(t.isArrowFunctionExpression(init) || t.isFunctionExpression(init))) return;
+        const rootElement = findComponentJsx(init.body);
+        if (!rootElement) return;
+        registerDefinition(id.name, filePath, rootElement);
       },
     });
   }

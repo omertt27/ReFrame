@@ -23,9 +23,18 @@ export function writeStyleProperty(ir: StyleIR, cssProperty: string, px: number)
     if (existing.kind === "color") {
       return { ok: false, reason: `"${cssProperty}" is a color value ("${existing.value}"), not a dimension` };
     }
+    if (existing.negated && px > 0) {
+      return {
+        ok: false,
+        reason: `"${cssProperty}" is currently negative (a UnaryExpression, e.g. "-1.5") — flipping it positive isn't attempted here, edit the source directly`,
+      };
+    }
     if (existing.form === "number") {
-      (existing.node as t.NumericLiteral).value = px;
+      (existing.node as t.NumericLiteral).value = existing.negated ? Math.abs(px) : px;
     } else {
+      // A negative "Npx" string ("-1.5px") is already just a StringLiteral
+      // — no UnaryExpression involved, the sign is part of the string
+      // content — so no equivalent guard is needed for this form.
       (existing.node as t.StringLiteral).value = `${px}px`;
     }
     return { ok: true };

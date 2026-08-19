@@ -59,6 +59,19 @@ export const EDITABLE_PROPERTIES: PropertyDef[] = [
   },
   { key: "textColor", label: "Text color", valueKind: "color", prefix: "text-", cssProperty: "color" },
   { key: "backgroundColor", label: "Background color", valueKind: "color", prefix: "bg-", cssProperty: "backgroundColor" },
+  // Typography dimensions — no `prefix`, deliberately: Tailwind's own
+  // utilities for these (font-bold, leading-relaxed, tracking-tight,
+  // text-lg) are separate keyword-based scales, not the numeric spacing
+  // scale h-/w-/p- map onto, so there is nothing for the Tailwind
+  // reader/writer to target. Style-backend only for now — the same "detect,
+  // don't guess" boundary color drew around Tailwind color utilities.
+  // Structurally these are no different from height/width/padding on the
+  // style side (readStyleObjectProperty/writeStyleProperty never assumed a
+  // px unit — only the Tailwind path did), so they need zero new IR code.
+  { key: "fontSize", label: "Font size", valueKind: "dimension", cssProperty: "fontSize" },
+  { key: "fontWeight", label: "Font weight", valueKind: "dimension", cssProperty: "fontWeight" },
+  { key: "lineHeight", label: "Line height", valueKind: "dimension", cssProperty: "lineHeight" },
+  { key: "letterSpacing", label: "Letter spacing", valueKind: "dimension", cssProperty: "letterSpacing" },
 ];
 
 function tokens(classList: string): string[] {

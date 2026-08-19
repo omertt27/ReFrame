@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { EDITABLE_PROPERTIES, readProperty, writeProperty } from "../src/properties.js";
+import { buildComponentGraph } from "../src/parse.js";
+import { EDITABLE_PROPERTIES, readProperty, readStyleObjectProperty, writeProperty } from "../src/properties.js";
+import { resolveDefinition } from "../src/resolve.js";
 import { pxToSpacingToken, spacingTokenToPx } from "../src/tailwind-scale.js";
+import { writeStyleProperty } from "../src/mutate/style.js";
+import { printFile } from "../src/write.js";
 
 const height = EDITABLE_PROPERTIES.find((p) => p.key === "height")!;
 const padding = EDITABLE_PROPERTIES.find((p) => p.key === "padding")!;
+const lineHeight = EDITABLE_PROPERTIES.find((p) => p.key === "lineHeight")!;
+const letterSpacing = EDITABLE_PROPERTIES.find((p) => p.key === "letterSpacing")!;
 
 describe("tailwind spacing scale", () => {
   it("maps exact scale values both ways", () => {
@@ -70,5 +76,99 @@ describe("readProperty / writeProperty — padding conflict guard", () => {
   it("writes p-* freely when there's no existing padding at all", () => {
     const result = writeProperty("absolute top-0 bg-transparent", padding, 24);
     expect(result).toEqual({ ok: true, classList: "absolute top-0 bg-transparent p-6" });
+  });
+});
+
+describe("responsive Tailwind prefixes (md:/lg:/...) — current, deliberately narrow behavior", () => {
+  // Real-world stress test finding: PrivaPDF (this session's real test
+  // subject) uses ZERO Tailwind responsive prefixes and ZERO Tailwind
+  // spacing-scale utilities anywhere in its actual source — every real
+  // dimension/color edit this session went through the style backend, not
+  // this one. These cases use realistic Tailwind syntax rather than real
+  // PrivaPDF code (there isn't any to test against) to document current
+  // engine behavior precisely, ahead of building real breakpoint support:
+  // ReFrame today only ever sees/writes the BASE (unprefixed) utility —
+  // findUtilityClass's `!t.includes(":")` guard deliberately excludes any
+  // responsive/state-variant token. This is safe (never silently rewrites
+  // a breakpoint override) but also invisible — there is currently no way
+  // to even show the user "tablet: 24px, mobile: 16px" exists at all.
+  it("readProperty finds only the base utility, ignoring responsive variants entirely", () => {
+    const result = readProperty("p-4 md:p-6 lg:p-8", padding);
+    expect(result).toEqual({ available: true, px: 16 });
+  });
+
+  it("writeProperty edits only the base utility — md:/lg: overrides survive untouched", () => {
+    const result = writeProperty("p-4 md:p-6 lg:p-8", padding, 20);
+    expect(result).toEqual({ ok: true, classList: "p-5 md:p-6 lg:p-8" });
+  });
+
+  it("editing the base value when only responsive variants exist (no base) appends one — it does not touch or infer from md:/lg:", () => {
+    // There's no bare "p-*" token here at all — Tailwind would fall back to
+    // md:'s value below that breakpoint via normal cascade, but ReFrame has
+    // no visibility into that; it just adds a new base utility.
+    const result = writeProperty("md:p-6 lg:p-8", padding, 16);
+    expect(result).toEqual({ ok: true, classList: "md:p-6 lg:p-8 p-4" });
+  });
+});
+
+describe("typography properties (fontSize/fontWeight/lineHeight/letterSpacing) — style backend only, no Tailwind prefix", () => {
+  it("readProperty/writeProperty (Tailwind) refuse a prefix-less property rather than guessing a mapping", () => {
+    // Contract callers must respect: readDimensionValue in apps/dev/host.ts
+    // guards on prop.prefix before ever calling these for exactly this
+    // reason — Tailwind's typography utilities (font-bold, leading-relaxed)
+    // are keyword scales, not the numeric spacing scale these functions
+    // implement, so there is no mapping to guess at.
+    expect(() => readProperty("text-lg font-bold", lineHeight)).toThrow(/no Tailwind prefix/);
+  });
+
+  it("reads and writes lineHeight (a unitless number, no px unit assumed) via the style backend", () => {
+    const graph = buildComponentGraph([
+      { filePath: "X.tsx", source: `export default function X() { return <h1 style={{ lineHeight: 1.1, letterSpacing: -1.5 }}>x</h1>; }` },
+    ]);
+    const def = resolveDefinition(graph, "X");
+    expect(readStyleObjectProperty(def.styleAttr!.ir, lineHeight)).toEqual({ available: true, px: 1.1 });
+    expect(readStyleObjectProperty(def.styleAttr!.ir, letterSpacing)).toEqual({ available: true, px: -1.5 });
+
+    const result = writeStyleProperty(def.styleAttr!.ir, "lineHeight", 1.5);
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after).toContain("lineHeight: 1.5");
+    expect(after).not.toContain("lineHeight: 1.1");
+  });
+
+  it("writes a new value onto an already-negative letter-spacing, preserving the negative form (PrivaPDF's exact AboutPage h1 shape)", () => {
+    const graph = buildComponentGraph([
+      { filePath: "X.tsx", source: `export default function X() { return <h1 style={{ letterSpacing: -1.5 }}>x</h1>; }` },
+    ]);
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleProperty(def.styleAttr!.ir, "letterSpacing", -2.5);
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after).toContain("letterSpacing: -2.5");
+  });
+
+  it("refuses to flip an already-negative value positive rather than guessing what that should look like", () => {
+    const graph = buildComponentGraph([
+      { filePath: "X.tsx", source: `export default function X() { return <h1 style={{ letterSpacing: -1.5 }}>x</h1>; }` },
+    ]);
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleProperty(def.styleAttr!.ir, "letterSpacing", 2);
+    expect(result.ok).toBe(false);
+  });
+
+  it("readStyleObjectProperty never needed a prefix in the first place — safe regardless of the element's className", () => {
+    // The actual crash this fix addresses lived one layer up, in
+    // apps/dev/host.ts's readDimensionValue, which unconditionally called
+    // the TAILWIND reader (readProperty, tested above) whenever an element
+    // had ANY className — very common in this codebase (e.g.
+    // className="nav-root" alongside inline styles). This test documents
+    // why that layer needed a guard: the style-backend reader below was
+    // never at fault, since it doesn't consult the className at all.
+    const graph = buildComponentGraph([
+      { filePath: "X.tsx", source: `export default function X() { return <h1 className="nav-root" style={{ lineHeight: 1.1 }}>x</h1>; }` },
+    ]);
+    const def = resolveDefinition(graph, "X");
+    expect(() => readStyleObjectProperty(def.styleAttr!.ir, lineHeight)).not.toThrow();
+    expect(readStyleObjectProperty(def.styleAttr!.ir, lineHeight)).toEqual({ available: true, px: 1.1 });
   });
 });

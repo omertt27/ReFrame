@@ -323,14 +323,24 @@
       // `path`/`elementTag` are only present when the click came from inside
       // a component (a nested JSX element), not from the Pages tree — an
       // empty/omitted path means "the component's own root", same meaning
-      // as before this ever existed.
-      function resolveSelection(component, route, path, elementTag) {
+      // as before this ever existed. `computedStyle` (the browser's actual
+      // rendered values for the clicked element, from preload.js) is
+      // likewise only present for a real click — a Pages-tree selection has
+      // no live DOM node to read it from yet, so the server-side external-
+      // CSS cross-check simply has nothing to compare against there.
+      function resolveSelection(component, route, path, elementTag, computedStyle) {
         var body = document.getElementById("properties-body");
         body.innerHTML = '<div class="empty">resolving ' + component + " ...</div>";
         fetch("/__reframe/resolve", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ component: component, route: route, path: path || [], elementTag: elementTag || null }),
+          body: JSON.stringify({
+            component: component,
+            route: route,
+            path: path || [],
+            elementTag: elementTag || null,
+            computedStyle: computedStyle || null,
+          }),
         })
           .then(function (r) {
             return r.json();
@@ -498,6 +508,10 @@
                 padding: "Padding",
                 textColor: "Text color",
                 backgroundColor: "Background color",
+                fontSize: "Font size",
+                fontWeight: "Font weight",
+                lineHeight: "Line height",
+                letterSpacing: "Letter spacing",
               };
               var prop = result.properties.values[key];
               var label = labels[key] || key;
@@ -574,9 +588,88 @@
           return;
         }
 
+        if (data.type === "computed-style-result") {
+          var pending = pendingVerifications[data.requestId];
+          if (pending) {
+            delete pendingVerifications[data.requestId];
+            pending({ matches: data.matches, actual: data.actual });
+          }
+          return;
+        }
+
         if (data.type !== "select") return;
-        resolveSelection(data.component, data.route, data.path, data.elementTag);
+        resolveSelection(data.component, data.route, data.path, data.elementTag, data.computedStyle);
       });
+
+      // Post-write half of the external-CSS safety net (see host.ts's
+      // crossCheckAgainstComputed for the pre-write half, and project
+      // memory `reframe-stress-test-responsive-css` for why this exists —
+      // ReFrame previously reported a padding edit as successful while the
+      // rendered page never changed). Asks preload.js to re-read the same
+      // DOM node's computed style after giving HMR a moment to settle, and
+      // compares it against the value the edit actually intended.
+      var pendingVerifications = {};
+      var verifyRequestCounter = 0;
+      function verifyComputedStyleOnce(property, kind, expected) {
+        return new Promise(function (resolve) {
+          var requestId = "v" + verifyRequestCounter++;
+          var timeoutId = setTimeout(function () {
+            delete pendingVerifications[requestId];
+            resolve({ matches: null, actual: null }); // no reply in time — don't guess a failure
+          }, 3000);
+          pendingVerifications[requestId] = function (result) {
+            clearTimeout(timeoutId);
+            resolve(result);
+          };
+          var iframe = document.getElementById("target");
+          iframe.contentWindow.postMessage(
+            { type: "reframe-verify-computed-style", requestId: requestId, property: property, kind: kind, expected: expected },
+            "*",
+          );
+        });
+      }
+
+      // A single check isn't reliable on its own: verified live that a
+      // brand-new Tailwind utility class (one that wasn't already used
+      // elsewhere in the target project) can take noticeably longer than
+      // React's own Fast Refresh to actually apply — Tailwind's dev-mode
+      // JIT compiler has to notice the new class and inject its CSS
+      // separately, which isn't on the same clock as HMR. A single ~700ms
+      // check produced a false "didn't apply" warning for exactly that
+      // case even though the edit was completely correct. Retrying a few
+      // times with growing delays before concluding "mismatch" avoids
+      // crying wolf on a slow-but-healthy edit while still catching a
+      // genuine, persistent mismatch (which stays mismatched no matter how
+      // many times it's re-checked).
+      function verifyComputedStyleWithRetry(property, kind, expected, delays) {
+        var attempt = 0;
+        function tryOnce() {
+          return verifyComputedStyleOnce(property, kind, expected).then(function (result) {
+            if (result.matches !== false || attempt >= delays.length) return result;
+            var delay = delays[attempt];
+            attempt++;
+            return new Promise(function (resolve) {
+              setTimeout(function () {
+                resolve(tryOnce());
+              }, delay);
+            });
+          });
+        }
+        return tryOnce();
+      }
+
+      function appendVerificationWarning(diffEl, property, expected, kind, verifyResult) {
+        if (verifyResult.matches !== false) return; // true: confirmed applied. null: couldn't verify, say nothing rather than guess.
+        diffEl.textContent +=
+          "\n\n⚠ Written to source, but the page didn't render the change — \"" +
+          property +
+          '" still shows ' +
+          verifyResult.actual +
+          " instead of the expected " +
+          expected +
+          (kind === "dimension" ? "px" : "") +
+          ". This property may be controlled by something ReFrame can't see (external CSS, specificity, !important). The source change is saved — you may want to undo it.";
+      }
 
       function mutate(property, px, backend) {
         if (!current || Number.isNaN(px)) return;
@@ -600,7 +693,14 @@
           })
           .then(function (result) {
             diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
-            if (result.ok) refreshHistory();
+            if (result.ok) {
+              refreshHistory();
+              setTimeout(function () {
+                verifyComputedStyleWithRetry(property, "dimension", px, [800, 1500]).then(function (verifyResult) {
+                  appendVerificationWarning(diffEl, property, px, "dimension", verifyResult);
+                });
+              }, 700);
+            }
           })
           .catch(function (err) {
             diffEl.textContent = "error: " + err;
@@ -629,7 +729,14 @@
           })
           .then(function (result) {
             diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
-            if (result.ok) refreshHistory();
+            if (result.ok) {
+              refreshHistory();
+              setTimeout(function () {
+                verifyComputedStyleWithRetry(property, "color", value, [800, 1500]).then(function (verifyResult) {
+                  appendVerificationWarning(diffEl, property, value, "color", verifyResult);
+                });
+              }, 700);
+            }
           })
           .catch(function (err) {
             diffEl.textContent = "error: " + err;

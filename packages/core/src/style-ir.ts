@@ -10,6 +10,16 @@ import * as t from "@babel/types";
  *     a plain "<number>px" string (`padding: "12px"`). The number-vs-string
  *     form is remembered per property so a write preserves whichever
  *     convention the author already used — see mutate/style.ts.
+ *   - a NEGATED numeric literal (`letterSpacing: -1.5`) — verified against
+ *     PrivaPDF's real AboutPage h1, which uses exactly this. JS has no
+ *     negative-literal token: `-1.5` parses as a UnaryExpression("-")
+ *     wrapping NumericLiteral(1.5), not a NumericLiteral with a negative
+ *     `.value` — missing this meant every negative style number (a common
+ *     shape for letter-spacing/margins) silently fell through to
+ *     "unsupported" until this was tested against real negative values.
+ *     `negated: true` marks this on the IR so a write can preserve the sign
+ *     rather than guess whether flipping it was intended — see
+ *     mutate/style.ts's guard.
  *   - any other plain string literal, generically treated as a "color"
  *     candidate — `color: "#3B82F6"`, `color: "var(--accent)"`,
  *     `color: "rebeccapurple"` are all structurally identical at the AST
@@ -32,7 +42,7 @@ import * as t from "@babel/types";
  *   - any computed/templated/non-literal expression
  */
 export type StylePropertyIR =
-  | { kind: "px"; value: number; form: "number" | "pxString"; node: t.NumericLiteral | t.StringLiteral }
+  | { kind: "px"; value: number; form: "number" | "pxString"; node: t.NumericLiteral | t.StringLiteral; negated?: boolean }
   | { kind: "color"; value: string; node: t.StringLiteral }
   | { kind: "unsupported"; reason: string; node: t.Node };
 
@@ -54,6 +64,9 @@ function looksLikeMultiValueShorthand(value: string): boolean {
 function extractStyleProperty(value: t.Expression, node: t.Node): StylePropertyIR {
   if (t.isNumericLiteral(value)) {
     return { kind: "px", value: value.value, form: "number", node: value };
+  }
+  if (t.isUnaryExpression(value) && value.operator === "-" && t.isNumericLiteral(value.argument)) {
+    return { kind: "px", value: -value.argument.value, form: "number", node: value.argument, negated: true };
   }
   if (t.isStringLiteral(value)) {
     const match = /^(-?\d+(?:\.\d+)?)px$/.exec(value.value);
