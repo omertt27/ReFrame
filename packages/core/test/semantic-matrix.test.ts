@@ -50,6 +50,49 @@ describe("2. conditional classes — cn()/clsx() with multiple conditions", () =
     expect(target.ir.args.map((a) => a.kind)).toEqual(["string", "conditional", "conditional"]);
   });
 
+  it("marks identifier and negated-identifier tests evaluable, leaves a member-expression test non-evaluable", () => {
+    const graph = buildComponentGraph([
+      { filePath: "Button.tsx", source: src },
+      {
+        filePath: "Toggle.tsx",
+        source: `
+          export default function Toggle({ collapsed }) {
+            return <div className={cn("base", !collapsed && "expanded")}>x</div>;
+          }
+        `,
+      },
+      {
+        filePath: "Card.tsx",
+        source: `
+          export default function Card({ state }) {
+            return <div className={cn("base", state.open && "open")}>x</div>;
+          }
+        `,
+      },
+    ]);
+
+    const button = resolveSharedClassTarget(graph, "Button");
+    if (button.ir.kind !== "clsxCall" || !button.ir.args) throw new Error("expected parsed clsx args");
+    expect(button.ir.args.map((a) => (a.kind === "conditional" ? a.evaluable : undefined))).toEqual([
+      undefined,
+      { propName: "isActive", negated: false },
+      { propName: "isDisabled", negated: false },
+    ]);
+
+    const toggle = resolveSharedClassTarget(graph, "Toggle");
+    if (toggle.ir.kind !== "clsxCall" || !toggle.ir.args) throw new Error("expected parsed clsx args");
+    const expanded = toggle.ir.args.find((a) => a.kind === "conditional");
+    expect(expanded?.kind === "conditional" ? expanded.evaluable : "missing").toEqual({
+      propName: "collapsed",
+      negated: true,
+    });
+
+    const card = resolveSharedClassTarget(graph, "Card");
+    if (card.ir.kind !== "clsxCall" || !card.ir.args) throw new Error("expected parsed clsx args");
+    const open = card.ir.args.find((a) => a.kind === "conditional");
+    expect(open?.kind === "conditional" ? open.evaluable : "missing").toBeNull();
+  });
+
   it("edits one conditional argument without touching the other or the static base", () => {
     const graph = buildComponentGraph([{ filePath: "Button.tsx", source: src }]);
     const target = resolveSharedClassTarget(graph, "Button");

@@ -189,15 +189,18 @@ export function buildComponentGraph(files: { filePath: string; source: string }[
         const name = openingName.name;
         if (!definitions.has(name)) return;
 
-        const props: Record<string, string> = {};
+        const props: Record<string, string | boolean> = {};
         for (const attr of path.node.openingElement.attributes) {
-          if (
-            t.isJSXAttribute(attr) &&
-            t.isJSXIdentifier(attr.name) &&
-            t.isStringLiteral(attr.value)
-          ) {
+          if (!t.isJSXAttribute(attr) || !t.isJSXIdentifier(attr.name)) continue;
+          if (attr.value === null) {
+            props[attr.name.name] = true; // shorthand boolean attribute, e.g. <Button isActive />
+          } else if (t.isStringLiteral(attr.value)) {
             props[attr.name.name] = attr.value.value;
+          } else if (t.isJSXExpressionContainer(attr.value) && t.isBooleanLiteral(attr.value.expression)) {
+            props[attr.name.name] = attr.value.expression.value;
           }
+          // Any other expression (identifier, member expression, call, ...)
+          // is left uncaptured — never guess a value we can't verify statically.
         }
 
         usages.push({ component: name, filePath, element: path.node, props });

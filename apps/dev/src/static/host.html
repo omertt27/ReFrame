@@ -444,6 +444,47 @@
         background: rgba(244, 163, 64, 0.12);
         color: #f4a340;
       }
+      .tree-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      .tree-row .page-label,
+      .tree-row .section-row {
+        flex: 1;
+      }
+      .tree-expand {
+        font-size: 10px;
+        color: #6b6b70;
+        width: 12px;
+        flex-shrink: 0;
+        text-align: center;
+        cursor: pointer;
+      }
+      .tree-expand-spacer {
+        width: 12px;
+        flex-shrink: 0;
+      }
+      .element-row {
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        cursor: pointer;
+        color: #9a9aa2;
+        flex: 1;
+      }
+      .element-row:hover {
+        background: #1a1a1d;
+        color: #f5f5f5;
+      }
+      .element-row.active {
+        background: rgba(244, 163, 64, 0.12);
+        color: #f4a340;
+      }
+      .element-tag-hint {
+        color: #55555a;
+        font-size: 11px;
+      }
       .empty {
         color: #6b6b70;
         font-size: 13px;
@@ -488,9 +529,13 @@
         padding: 4px 0;
         cursor: pointer;
       }
-      .scope label.disabled {
-        color: #55555a;
-        cursor: default;
+      .scope-note {
+        font-size: 12px;
+        color: #9a9aa2;
+        margin-bottom: 6px;
+      }
+      .scope-note code {
+        color: #cfcfd6;
       }
       .prop-group {
         margin-bottom: 18px;
@@ -732,6 +777,7 @@
     <script>
       var current = null; // { component, route, usageCount, kind, availableInstance }
       var scope = "all";
+      var clsxArgIndex = null; // which clsx()/cn() argument a write should target — see scopeChoice.kind === "clsx"
 
       // Direct on-canvas resize: the overlay + its 3 handles track the
       // selected element's rect (sent alongside every `select` message);
@@ -911,17 +957,37 @@
         dragState = null;
       }
 
+      // One expandable row — a page/section label plus an expand arrow that
+      // lazy-loads that component's "meaningful children" tree (see
+      // renderElementTreeNode below) on first click, exactly like
+      // .group-label/.group-children already lazy-nothing but eagerly
+      // toggle — same nextElementSibling show/hide idiom, just fetching the
+      // content in first instead of it already being in the DOM.
+      function treeRow(route, component, labelHtml) {
+        return (
+          '<div class="tree-row">' +
+          '<span class="tree-expand" data-route="' +
+          route +
+          '" data-component="' +
+          component +
+          '">▸</span>' +
+          labelHtml +
+          "</div>" +
+          '<div class="element-subtree" data-route="' + route + '" data-component="' + component + '" style="display: none"></div>'
+        );
+      }
+
       // One page node — a real route, plus whatever named top-level
       // sections it composes from (rare in practice: verified live that
       // only 1 of ~50 real PrivaPDF routes had any).
       function renderPageNode(p) {
         var sections = p.sections
           .map(function (name) {
-            return '<div class="section-row" data-route="' + p.route + '" data-component="' + name + '">' + name + "</div>";
+            return treeRow(p.route, name, '<div class="section-row" data-route="' + p.route + '" data-component="' + name + '">' + name + "</div>");
           })
           .join("");
-        return (
-          '<div class="page-item"><div class="page-label" data-route="' +
+        var pageLabel =
+          '<div class="page-label" data-route="' +
           p.route +
           '" data-component="' +
           p.pageComponent +
@@ -929,10 +995,31 @@
           p.route +
           '">' +
           p.label +
-          "</div>" +
-          sections +
-          "</div>"
-        );
+          "</div>";
+        return '<div class="page-item">' + treeRow(p.route, p.pageComponent, pageLabel) + sections + "</div>";
+      }
+
+      // Recursively renders one ElementTreeNode (see packages/core's
+      // buildElementTree) — a friendly-named row, plus its own children
+      // nested inline (already fetched in one call, so no further lazy
+      // loading needed at deeper levels) behind their own expand arrow. A
+      // component-boundary node never gets an arrow: its internals belong
+      // to its own definition, not this component's tree.
+      function renderElementTreeNode(node) {
+        var pathAttr = node.path.join(",");
+        var hasChildren = !node.isComponent && node.children && node.children.length > 0;
+        var label = friendlyElementName(node.tag) + (node.isComponent ? ' <span class="element-tag-hint">· component</span>' : "");
+        var row =
+          '<div class="tree-row">' +
+          (hasChildren ? '<span class="tree-expand" data-element-path="' + pathAttr + '">▸</span>' : '<span class="tree-expand-spacer"></span>') +
+          '<div class="element-row" data-path="' + pathAttr + '">' + label + "</div>" +
+          "</div>";
+        var childrenHtml = hasChildren
+          ? '<div class="element-children" data-element-path="' + pathAttr + '" style="display: none">' +
+            node.children.map(renderElementTreeNode).join("") +
+            "</div>"
+          : "";
+        return '<div class="element-node" style="padding-left: 12px">' + row + childrenHtml + "</div>";
       }
 
       // A group exists ONLY because 2+ real routes share a first path
@@ -983,22 +1070,92 @@
             // any section-row at all among ~25 real routes.
             Array.prototype.forEach.call(body.querySelectorAll(".page-label"), function (el) {
               el.addEventListener("click", function () {
-                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"));
+                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"), []);
               });
             });
             Array.prototype.forEach.call(body.querySelectorAll(".section-row"), function (el) {
               el.addEventListener("click", function () {
-                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"));
+                selectFromTree(el.getAttribute("data-route"), el.getAttribute("data-component"), []);
               });
+            });
+
+            // A single delegated listener handles every expand arrow (both
+            // the top-level page/section one, which lazy-fetches
+            // /__reframe/element-tree on first open, and the nested ones
+            // inside an already-fetched tree, which just toggle) and every
+            // nested element row's click-to-select — new subtree markup
+            // keeps arriving after this listener is attached, so delegation
+            // avoids re-wiring on every fetch.
+            body.addEventListener("click", function (e) {
+              var expand = e.target.closest(".tree-expand");
+              if (expand) {
+                var target = expand.closest(".tree-row").nextElementSibling;
+                var isOpen = target.style.display !== "none";
+                if (isOpen) {
+                  target.style.display = "none";
+                  expand.textContent = "▸";
+                  return;
+                }
+                target.style.display = "block";
+                expand.textContent = "▾";
+                if (!expand.hasAttribute("data-element-path") && !target.dataset.loaded) {
+                  target.dataset.loaded = "1";
+                  var route = expand.getAttribute("data-route");
+                  var component = expand.getAttribute("data-component");
+                  target.innerHTML = '<div class="empty" style="padding-left: 12px">loading…</div>';
+                  fetch("/__reframe/element-tree", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ component: component }),
+                  })
+                    .then(function (r) {
+                      return r.json();
+                    })
+                    .then(function (result) {
+                      if (!result.ok) {
+                        target.innerHTML = '<div class="empty" style="padding-left: 12px">' + (result.error || "couldn't load") + "</div>";
+                        return;
+                      }
+                      target.innerHTML = result.tree.length
+                        ? result.tree.map(renderElementTreeNode).join("")
+                        : '<div class="empty" style="padding-left: 12px">nothing nested here</div>';
+                    });
+                }
+                return;
+              }
+
+              var elRow = e.target.closest(".element-row");
+              if (elRow) {
+                var container = elRow.closest(".element-subtree");
+                if (!container) return;
+                var elRoute = container.getAttribute("data-route");
+                var elComponent = container.getAttribute("data-component");
+                var elPath = elRow.getAttribute("data-path");
+                Array.prototype.forEach.call(body.querySelectorAll(".element-row.active"), function (el) {
+                  el.classList.remove("active");
+                });
+                elRow.classList.add("active");
+                selectFromTree(elRoute, elComponent, elPath ? elPath.split(",").map(Number) : []);
+              }
             });
           });
       }
 
-      function selectFromTree(route, component) {
+      function selectFromTree(route, component, path) {
         var iframe = document.getElementById("target");
+        var hasPath = Array.isArray(path) && path.length > 0;
         Array.prototype.forEach.call(document.querySelectorAll(".section-row, .page-label"), function (el) {
-          el.classList.toggle("active", el.getAttribute("data-route") === route && el.getAttribute("data-component") === component);
+          el.classList.toggle("active", !hasPath && el.getAttribute("data-route") === route && el.getAttribute("data-component") === component);
         });
+        if (hasPath) {
+          // The specific .element-row was already marked active by the
+          // click handler above (it has the DOM reference this function
+          // doesn't) — just make sure no stale top-level row stays lit.
+        } else {
+          Array.prototype.forEach.call(document.querySelectorAll(".element-row.active"), function (el) {
+            el.classList.remove("active");
+          });
+        }
         // A Pages-tree selection has no click rect at all — clear any rect
         // left over from a previous canvas click so updateCanvasToolbar
         // (called once resolve completes) correctly hides the toolbar
@@ -1008,11 +1165,11 @@
         var proxyOrigin = new URL(iframe.src).origin;
         var currentPath = new URL(iframe.src).pathname;
         if (currentPath === route) {
-          resolveSelection(component, route);
+          resolveSelection(component, route, path);
         } else {
           iframe.src = proxyOrigin + route;
           setTimeout(function () {
-            resolveSelection(component, route);
+            resolveSelection(component, route, path);
           }, 900);
         }
       }
@@ -1845,29 +2002,26 @@
           route: result.route,
           usageCount: result.usageCount,
           availableInstance: result.kind === "usage",
+          scopeChoice: result.scopeChoice || null,
           path: path,
           properties: result.properties,
         };
-        scope = "all";
+        // Narrowest safe default: only broaden to "all" when there's no
+        // specific usage to scope down to at all (current.availableInstance
+        // false). When a scope choice is genuinely meaningful (see below)
+        // the user opts into the wider blast radius explicitly rather than
+        // it being silently pre-selected.
+        scope = current.availableInstance ? "instance" : "all";
+        clsxArgIndex = current.scopeChoice && current.scopeChoice.kind === "clsx" ? current.scopeChoice.defaultIndex : null;
 
         var shared = result.usageCount > 1;
-        var metaText = shared
-          ? "Shared · " + result.usageCount + " places"
-          : result.usageCount === 1
-            ? "1 usage"
-            : "Page";
-        var scopeDisabledAttr = current.availableInstance ? "" : "disabled";
+        var metaText = shared ? "Used in " + result.usageCount + " places" : result.usageCount === 1 ? "1 usage" : "Page";
         var noteHtml = result.note ? '<div class="unavailable" style="margin: -8px 0 16px">' + humanizeReason(result.note) + "</div>" : "";
 
         // A nested element inside a component's render — not a new component,
         // just a specific JSX node — gets a breadcrumb (its position within
-        // the render) instead of the "shared component" framing, and the
-        // instance/all-instances scope choice doesn't apply: a nested
-        // element's own className already resolves to exactly one branch for
-        // whichever component instance was clicked (see host.ts's mutate
-        // handler), there is nothing else to choose between.
+        // the render) instead of the "shared component" framing.
         var breadcrumbHtml = "";
-        var scopeHtml = "";
         if (isNested && result.breadcrumb) {
           breadcrumbHtml =
             '<div class="breadcrumb">' +
@@ -1878,15 +2032,51 @@
               })
               .join('<span class="sep">→</span>') +
             "</div>";
-        } else {
+        }
+
+        // The instance/all-instances (or, for clsx, "which argument") choice
+        // only ever changes anything when the root className is a
+        // prop-driven ternary or a multi-argument clsx()/cn() call — a plain
+        // string class, a single-arg clsx call, or any nested element always
+        // resolves to exactly one target regardless of scope (see host.ts's
+        // /__reframe/resolve handler, which only sends scopeChoice in those
+        // two cases). Showing a scope UI any other time would be asking a
+        // question the editor can already answer, so it only renders when
+        // scopeChoice is present — and when it is, it's surfaced right here
+        // in the main panel, not buried behind Advanced, since choosing it
+        // wrong silently rewrites (or targets) a variant the user didn't
+        // mean to touch.
+        var scopeHtml = "";
+        if (current.scopeChoice && current.scopeChoice.kind === "ternary") {
           scopeHtml =
             '<div class="scope">' +
-            '<label><input type="radio" name="scope" value="all" checked /> All instances</label>' +
-            '<label class="' +
-            (current.availableInstance ? "" : "disabled") +
-            '"><input type="radio" name="scope" value="instance" ' +
-            scopeDisabledAttr +
-            " /> This instance</label>" +
+            '<div class="scope-note">This element has two variants (based on <code>' +
+            current.scopeChoice.propName +
+            "</code>).</div>" +
+            '<label><input type="radio" name="scope" value="instance" checked /> Just this one</label>' +
+            '<label><input type="radio" name="scope" value="all" /> Both variants</label>' +
+            "</div>";
+        } else if (current.scopeChoice && current.scopeChoice.kind === "clsx") {
+          scopeHtml =
+            '<div class="scope">' +
+            '<div class="scope-note">This element\'s style is built from ' +
+            current.scopeChoice.args.length +
+            " pieces — choose which one an edit changes.</div>" +
+            current.scopeChoice.args
+              .map(function (a) {
+                var checked = a.index === current.scopeChoice.defaultIndex ? " checked" : "";
+                return (
+                  '<label><input type="radio" name="clsx-arg" value="' +
+                  a.index +
+                  '"' +
+                  checked +
+                  " /> " +
+                  a.label +
+                  (a.active === false ? " (not active now)" : "") +
+                  "</label>"
+                );
+              })
+              .join("") +
             "</div>";
         }
 
@@ -1938,7 +2128,6 @@
           metaText +
           "</div>" +
           breadcrumbHtml +
-          scopeHtml +
           "</details>";
 
         body.innerHTML =
@@ -1946,6 +2135,7 @@
           titleText +
           "</div>" +
           noteHtml +
+          scopeHtml +
           textField(result.text) +
           hiddenStyleNote +
           propsHtml +
@@ -1954,6 +2144,11 @@
         Array.prototype.forEach.call(document.querySelectorAll('input[name="scope"]'), function (el) {
           el.addEventListener("change", function () {
             scope = el.value;
+          });
+        });
+        Array.prototype.forEach.call(document.querySelectorAll('input[name="clsx-arg"]'), function (el) {
+          el.addEventListener("change", function () {
+            clsxArgIndex = Number(el.value);
           });
         });
         wireFieldInputs(body);
@@ -2171,6 +2366,7 @@
             backend: backend,
             path: current.path || [],
             viewport: currentViewport,
+            clsxArgIndex: clsxArgIndex,
           }),
         })
           .then(function (r) {

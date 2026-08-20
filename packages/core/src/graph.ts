@@ -36,12 +36,16 @@ export interface ComponentDef {
   isDefaultExport: boolean;
 }
 
-/** A `<Component prop="value" />` call site, distinct from its definition. */
+/** A `<Component prop="value" />` call site, distinct from its definition.
+ * `props` only ever holds values that were statically verifiable from the
+ * JSX attribute itself (a string literal, a shorthand boolean attribute, or
+ * an explicit `{true}`/`{false}`) — an identifier, member expression, or any
+ * other JSX expression is left uncaptured rather than guessed at. */
 export interface UsageSite {
   component: string;
   filePath: string;
   element: t.JSXElement;
-  props: Record<string, string>;
+  props: Record<string, string | boolean>;
 }
 
 export interface ParsedFile {

@@ -8,6 +8,7 @@ import { createPatch } from "diff";
 
 import {
   applyClassMutation,
+  buildElementTree,
   duplicateElement,
   EDITABLE_PROPERTIES,
   extractClassAttr,
@@ -35,6 +36,7 @@ import {
   writeStyleProperty,
   writeTextContent,
   type ClassAttrRef,
+  type ClsxArg,
   type ComponentDef,
   type PropertyDef,
   type StyleAttrRef,
@@ -179,9 +181,36 @@ function buildPageTree(pages: PageTreeNode[]): (PageTreeNode | GroupTreeNode)[] 
 
 /** Which ternary branch a specific prop value resolves to — the same rule
  * used everywhere "this instance" vs "all instances" is decided. */
-function branchForValue(ir: { propName: string; testValue: string }, value: string | undefined): "consequent" | "alternate" {
+function branchForValue(
+  ir: { propName: string; testValue: string },
+  value: string | boolean | undefined,
+): "consequent" | "alternate" {
   return value === ir.testValue ? "consequent" : "alternate";
 }
+
+/** Whether a clsx()/cn() argument is active for a given usage's props —
+ * `true`/`false` when it's a plain string or an evaluable (identifier /
+ * `!identifier`) conditional whose prop was actually captured, `null` when
+ * it can't be determined (a non-evaluable test, or a prop that wasn't
+ * captured — see UsageSite.props). Never guessed either way. */
+function clsxArgActive(arg: ClsxArg, props: Record<string, string | boolean> | null): boolean | null {
+  if (arg.kind === "string") return true;
+  if (!arg.evaluable || !props) return null;
+  const raw = props[arg.evaluable.propName];
+  if (raw === undefined) return null;
+  const truthy = typeof raw === "boolean" ? raw : raw.length > 0;
+  return arg.evaluable.negated ? !truthy : truthy;
+}
+
+/** Whether "all instances" vs "this instance" (ternary) or "which argument"
+ * (clsx) is a real, non-no-op choice for the selected element's className —
+ * see the /resolve handler below, the only place this is populated. `null`
+ * means the choice is a no-op (plain string class, single-arg clsx, or a
+ * nested element), so the client shows no scope UI at all. */
+type ScopeChoice =
+  | { kind: "ternary"; propName: string; currentBranch: "consequent" | "alternate" }
+  | { kind: "clsx"; args: { index: number; label: string; active: boolean | null }[]; defaultIndex: number }
+  | null;
 
 /** Resolves which JSX node an operation should target — the component's own
  * root when no path is given, or the specific nested node an ElementPath
@@ -429,7 +458,7 @@ function crossCheckAgainstComputed(
 function readCurrentProperties(
   classAttr: ClassAttrRef | null,
   styleAttr: StyleAttrRef | null,
-  usageProps: Record<string, string> | null,
+  usageProps: Record<string, string | boolean> | null,
   computedStyle: Record<string, string> | null,
   tier: ViewportTier,
 ) {
@@ -579,8 +608,19 @@ function applyTailwindPropertyEdit(
  * If the property isn't set in any argument yet, defaults to appending it
  * onto the first plain-string argument (the conventional "base classes"
  * position) — refuses rather than guessing if there isn't one.
+ *
+ * `forcedIndex`, when given, overrides the structural search entirely — the
+ * client already showed the user which argument would be targeted (see
+ * ScopeChoice's "clsx" variant in the /resolve handler) and let them pick a
+ * different one, so this is an explicit choice, not a guess.
  */
-function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: number, tier: ViewportTier): number | null {
+function applyClsxPropertyEdit(
+  classAttr: ClassAttrRef,
+  prop: PropertyDef,
+  px: number,
+  tier: ViewportTier,
+  forcedIndex?: number,
+): number | null {
   const fresh = extractClassIR(classAttr.attrNode);
   if (!fresh || fresh.kind !== "clsxCall") throw new Error("Expected a clsx()/cn() call");
   if (fresh.args === null) {
@@ -590,9 +630,9 @@ function applyClsxPropertyEdit(classAttr: ClassAttrRef, prop: PropertyDef, px: n
     );
   }
 
-  let targetIndex = fresh.args.findIndex((a) => prop.prefix && findUtilityClass(a.value, prop.prefix));
+  let targetIndex = forcedIndex ?? fresh.args.findIndex((a) => prop.prefix && findUtilityClass(a.value, prop.prefix));
   if (targetIndex === -1) targetIndex = fresh.args.findIndex((a) => a.kind === "string");
-  if (targetIndex === -1) {
+  if (targetIndex === -1 || !fresh.args[targetIndex]) {
     throw new Error(`${fresh.calleeName}() has no plain string argument to add "${prop.prefix}" to`);
   }
 
@@ -682,6 +722,25 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
       return;
     }
 
+    if (req.method === "POST" && req.url === "/__reframe/element-tree") {
+      readJsonBody(req)
+        .then((body) => {
+          const { component } = body as { component?: string };
+          if (!component) {
+            sendJson(res, 400, { ok: false, error: "expected { component }" });
+            return;
+          }
+          const def = graph.definitions.get(component);
+          if (!def) {
+            sendJson(res, 200, { ok: false, error: `Unknown component "${component}"` });
+            return;
+          }
+          sendJson(res, 200, { ok: true, tree: buildElementTree(def.rootElement, graph) });
+        })
+        .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
+      return;
+    }
+
     if (req.method === "GET" && req.url === "/__reframe/history") {
       sendJson(res, 200, {
         history: state.history.map(({ id, filePath, description }) => ({ id, filePath, description })),
@@ -733,7 +792,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
 
           let kind: "usage" | "definition";
           let filePath: string;
-          let props: Record<string, string> | null = null;
+          let props: Record<string, string | boolean> | null = null;
           let note: string | undefined;
           try {
             const result = resolveComponentAtRoute(graph, component, route);
@@ -786,6 +845,37 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
           const text =
             textIR.kind === "text" ? { editable: true as const, value: textIR.value } : { editable: false as const, reason: textIR.reason };
 
+          // "All instances" vs "this instance" only ever changes anything
+          // when the root className is a prop-driven ternary or a clsx()/cn()
+          // call with more than one argument (see the branches/forcedIndex
+          // logic in the /__reframe/mutate handler below) — a plain string
+          // class, a single-arg clsx call, or any nested element always
+          // resolves to exactly one target regardless of scope. Only report
+          // a scopeChoice (and thus only let the client show a scope UI) in
+          // those two real cases, so the UI never asks a question the editor
+          // can already answer.
+          let scopeChoice: ScopeChoice = null;
+          if (!hasPath && classAttr) {
+            const fresh = extractClassIR(classAttr.attrNode);
+            if (fresh && fresh.kind === "ternary" && kind === "usage" && props) {
+              scopeChoice = { kind: "ternary", propName: fresh.propName, currentBranch: branchForValue(fresh, props[fresh.propName]) };
+            } else if (fresh && fresh.kind === "clsxCall" && fresh.args && fresh.args.length > 1) {
+              const args = fresh.args.map((arg, index) => ({
+                index,
+                label:
+                  arg.kind === "string"
+                    ? "Always"
+                    : arg.evaluable
+                      ? `When ${arg.evaluable.negated ? "not " : ""}${arg.evaluable.propName}`
+                      : `When ${arg.testSource}`,
+                active: clsxArgActive(arg, props),
+              }));
+              const activeIndex = args.find((a) => a.active === true)?.index;
+              const firstStringIndex = fresh.args.findIndex((a) => a.kind === "string");
+              scopeChoice = { kind: "clsx", args, defaultIndex: activeIndex ?? (firstStringIndex === -1 ? 0 : firstStringIndex) };
+            }
+          }
+
           sendJson(res, 200, {
             ok: true,
             kind,
@@ -797,6 +887,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             text,
             path: hasPath ? path : [],
             breadcrumb,
+            scopeChoice,
           });
         })
         .catch((err) => sendJson(res, 400, { ok: false, error: (err as Error).message }));
@@ -806,7 +897,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/mutate") {
       readJsonBody(req)
         .then((body) => {
-          const { component, route, scope, property, px, value, backend, path, viewport } = body as {
+          const { component, route, scope, property, px, value, backend, path, viewport, clsxArgIndex } = body as {
             component?: string;
             route?: string;
             scope?: "instance" | "all";
@@ -816,6 +907,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             backend?: Backend;
             path?: number[];
             viewport?: ViewportTier;
+            clsxArgIndex?: number;
           };
           if (!component || !route || !scope || !property || !backend || (typeof px !== "number" && typeof value !== "string")) {
             sendJson(res, 400, { ok: false, error: "expected { component, route, scope, property, backend, px } or { ..., value }" });
@@ -893,8 +985,10 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 // below the forEach the ternary/string cases use, since
                 // there's nothing to iterate: a clsx() call has exactly one
                 // relevant argument per edit, not a consequent/alternate
-                // pair.
-                beforePx = applyClsxPropertyEdit(classAttr, propDef, px, tier);
+                // pair. clsxArgIndex, when the client sent one (see
+                // ScopeChoice's "clsx" variant), overrides the structural
+                // fallback applyClsxPropertyEdit would otherwise use.
+                beforePx = applyClsxPropertyEdit(classAttr, propDef, px, tier, clsxArgIndex);
                 branches = [];
               } else {
                 // Every other ClassIR kind is handled above (string/ternary/
@@ -905,7 +999,11 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 const px0 = applyTailwindPropertyEdit(classAttr, branch, propDef, px, tier);
                 if (i === 0) beforePx = px0;
               });
-              scopeLabel = !hasPath && scope === "all" ? "all usages" : "this instance";
+              // clsx never has an "all usages" concept — a write always
+              // lands on exactly one argument (see applyClsxPropertyEdit) —
+              // so it's always described as "this instance" regardless of
+              // what scope the client happened to send.
+              scopeLabel = fresh.kind !== "clsxCall" && !hasPath && scope === "all" ? "all usages" : "this instance";
             }
 
             // The viewport tier only means anything for a Tailwind write —

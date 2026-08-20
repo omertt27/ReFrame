@@ -143,6 +143,28 @@ describe("resolveComponentAtRoute", () => {
     const graph = loadNestedFixture();
     expect(() => resolveComponentAtRoute(graph, "Navbar", "/about")).toThrow(/No usage or definition/);
   });
+
+  it("captures boolean-ish usage props (shorthand and explicit {true}/{false}), never a computed expression", () => {
+    const graph = buildComponentGraph([
+      { filePath: "app/components/Badge.tsx", source: `export default function Badge({ isActive, dismissible, mode }) { return <span />; }` },
+      {
+        filePath: "app/page.tsx",
+        source: `
+          import Badge from "./components/Badge";
+          const dynamic = true;
+          export default function HomePage() {
+            return <Badge isActive dismissible={false} mode={dynamic} />;
+          }
+        `,
+      },
+    ]);
+
+    const usage = resolveComponentAtRoute(graph, "Badge", "/");
+    if (!("props" in usage)) throw new Error("expected a usage site");
+    expect(usage.props.isActive).toBe(true);
+    expect(usage.props.dismissible).toBe(false);
+    expect("mode" in usage.props).toBe(false); // identifier-valued — not statically verifiable, never guessed
+  });
 });
 
 function loadMultiSectionFixture() {

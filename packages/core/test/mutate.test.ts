@@ -131,7 +131,13 @@ describe("clsx()/cn() class edit", () => {
     if (target.ir.kind !== "clsxCall" || !target.ir.args) throw new Error("expected parsed clsx args");
     expect(target.ir.args).toEqual([
       { kind: "string", value: "rounded-full px-4 py-2 text-sm font-medium", node: expect.anything() },
-      { kind: "conditional", testSource: "active", value: "bg-slate-900 text-white", node: expect.anything() },
+      {
+        kind: "conditional",
+        testSource: "active",
+        evaluable: { propName: "active", negated: false },
+        value: "bg-slate-900 text-white",
+        node: expect.anything(),
+      },
     ]);
 
     applyClassMutation(target, { op: "setClsxArg", index: 0, value: "rounded-md px-4 py-2 text-sm font-medium" });

@@ -3,7 +3,19 @@ import * as t from "@babel/types";
 /** One argument of a clsx()/cn() call, structurally recognized. */
 export type ClsxArg =
   | { kind: "string"; value: string; node: t.StringLiteral }
-  | { kind: "conditional"; testSource: string; value: string; node: t.StringLiteral };
+  | {
+      kind: "conditional";
+      testSource: string;
+      /** Set only when the test is a simple identifier or `!identifier` —
+       * a shape a captured usage-site prop (see UsageSite.props in graph.ts)
+       * can actually be checked against. A member expression or anything
+       * else stays null: still shown via testSource, just not evaluable
+       * against a specific usage's props, same "display-only vs. real"
+       * boundary stringifyTestExpr already draws. */
+      evaluable: { propName: string; negated: boolean } | null;
+      value: string;
+      node: t.StringLiteral;
+    };
 
 /**
  * The explicit capability boundary: a className expression either matches
@@ -60,6 +72,17 @@ function stringifyTestExpr(node: t.Expression): string {
   return "<expr>";
 }
 
+/** The subset of test shapes that can actually be checked against a captured
+ * usage-site prop (an identifier or its negation) — a member expression or
+ * anything else has no single prop name to look up, so it stays null. */
+function evaluableTest(node: t.Expression): { propName: string; negated: boolean } | null {
+  if (t.isIdentifier(node)) return { propName: node.name, negated: false };
+  if (t.isUnaryExpression(node) && node.operator === "!" && t.isIdentifier(node.argument)) {
+    return { propName: node.argument.name, negated: true };
+  }
+  return null;
+}
+
 function extractClsxArgs(call: t.CallExpression): ClsxArg[] | null {
   const args: ClsxArg[] = [];
   for (const arg of call.arguments) {
@@ -71,6 +94,7 @@ function extractClsxArgs(call: t.CallExpression): ClsxArg[] | null {
       args.push({
         kind: "conditional",
         testSource: stringifyTestExpr(arg.left as t.Expression),
+        evaluable: evaluableTest(arg.left as t.Expression),
         value: arg.right.value,
         node: arg.right,
       });

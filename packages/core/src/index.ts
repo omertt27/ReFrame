@@ -2,6 +2,7 @@ export * from "./graph.js";
 export * from "./class-ir.js";
 export * from "./style-ir.js";
 export * from "./text-ir.js";
+export * from "./element-tree.js";
 export * from "./jsx-utils.js";
 export * from "./parse.js";
 export * from "./load.js";
