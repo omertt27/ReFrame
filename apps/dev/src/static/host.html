@@ -2241,6 +2241,11 @@
           return;
         }
 
+        if (data.type === "delete-key") {
+          deleteSelectedElement();
+          return;
+        }
+
         if (data.type !== "select") return;
         updateSelectionOverlay(data.rect);
         resolveSelection(data.component, data.route, data.path, data.elementTag, data.computedStyle);

@@ -594,6 +594,32 @@
   });
   document.documentElement.addEventListener("mouseleave", clearHover);
 
+  // `lastSelection` tracks the resolved {component, path} alongside
+  // `lastSelectedElement`'s DOM node — the keyboard-navigation helpers below
+  // need to know when a candidate ancestor/sibling resolves to something
+  // DIFFERENT from what's already selected (see climbToParent), not just
+  // "resolves to anything."
+  var lastSelection = null;
+  function selectElement(el, resolved) {
+    lastSelectedElement = el;
+    lastSelection = { component: resolved.component, path: resolved.path };
+    var rect = el.getBoundingClientRect();
+    el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    window.parent.postMessage(
+      {
+        source: "reframe-preload",
+        type: "select",
+        component: resolved.component,
+        path: resolved.path,
+        elementTag: resolved.skipTagCheck ? null : el.tagName ? el.tagName.toLowerCase() : null,
+        route: window.location.pathname,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        computedStyle: computedStyleFor(el),
+      },
+      "*",
+    );
+  }
+
   document.addEventListener(
     "click",
     function (event) {
@@ -601,24 +627,68 @@
       if (!resolved) return;
       event.preventDefault();
       event.stopPropagation();
-      lastSelectedElement = event.target;
-      var rect = event.target.getBoundingClientRect();
-      window.parent.postMessage(
-        {
-          source: "reframe-preload",
-          type: "select",
-          component: resolved.component,
-          path: resolved.path,
-          elementTag: resolved.skipTagCheck ? null : event.target.tagName ? event.target.tagName.toLowerCase() : null,
-          route: window.location.pathname,
-          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
-          computedStyle: computedStyleFor(event.target),
-        },
-        "*",
-      );
+      selectElement(event.target, resolved);
     },
     true,
   );
+
+  // Selection-navigation keyboard shortcuts (Escape/Tab/Shift+Tab), reusing
+  // resolveClick itself rather than any separate path-arithmetic — same "no
+  // fake affordance" principle as the hover outline above: a shortcut only
+  // ever lands somewhere a real click could also have landed. Escape climbs
+  // DOM ancestors until one resolves to a DIFFERENT element than what's
+  // already selected (the immediate parentElement usually resolves back to
+  // the SAME meaningful element resolveClick would have anchored on anyway
+  // — that's not "no parent," it's "keep climbing"). Tab/Shift+Tab only walk
+  // real DOM siblings at the current level — crossing up into a different
+  // parent isn't attempted, so hitting the end of a sibling list is a no-op
+  // rather than a guess about what "next" should mean up a level.
+  function climbToParent(el) {
+    var node = el.parentElement;
+    var depth = 0;
+    while (node && depth < 60) {
+      var resolved = resolveClick(node);
+      if (resolved && (!lastSelection || resolved.component !== lastSelection.component || JSON.stringify(resolved.path) !== JSON.stringify(lastSelection.path))) {
+        return { el: node, resolved: resolved };
+      }
+      node = node.parentElement;
+      depth++;
+    }
+    return null;
+  }
+  function siblingTarget(el, direction) {
+    var node = direction === "next" ? el.nextElementSibling : el.previousElementSibling;
+    while (node) {
+      var resolved = resolveClick(node);
+      if (resolved) return { el: node, resolved: resolved };
+      node = direction === "next" ? node.nextElementSibling : node.previousElementSibling;
+    }
+    return null;
+  }
+  document.addEventListener("keydown", function (event) {
+    if (!lastSelectedElement || !lastSelectedElement.isConnected) return;
+    var t = event.target;
+    if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+    if (event.key === "Escape") {
+      var parent = climbToParent(lastSelectedElement);
+      if (parent) {
+        event.preventDefault();
+        selectElement(parent.el, parent.resolved);
+      }
+    } else if (event.key === "Tab") {
+      var sib = siblingTarget(lastSelectedElement, event.shiftKey ? "prev" : "next");
+      if (sib) {
+        event.preventDefault();
+        selectElement(sib.el, sib.resolved);
+      }
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      enterInlineTextEdit(lastSelectedElement);
+    } else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      window.parent.postMessage({ source: "reframe-preload", type: "delete-key" }, "*");
+    }
+  });
 
   // Post-write verification: the host page asks (after giving HMR a moment
   // to settle) whether the element it edited actually changed the way the
