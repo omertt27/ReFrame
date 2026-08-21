@@ -23,10 +23,10 @@ an LLM again.
 
 ReFrame is explicitly **not** an AI product. There's no chat, no LLM calls, no token metering
 anywhere in the editing path. It's a parser + a deterministic mutation engine + a canvas — closer
-to a code-aware Wix/Webflow than to a coding assistant.
+to a code-aware Wix/Webflow than to a coding assistant. Point, edit, get a clean diff.
 
-**Current scope (v0):** Next.js (App Router) + React (Server & Client Components) + Tailwind CSS.
-Not a universal website editor yet.
+**Current scope (v0):** Next.js (App Router) + React (Server & Client Components) + Tailwind CSS
+(with `style={{}}` and external-CSS fallback support). Not a universal website editor yet.
 
 ## Why this over the existing manual editor (Onlook)?
 
@@ -44,6 +44,32 @@ conditionals, shared-component usages, `clsx`/`cn()` calls — and refuse to gue
 recognize the shape, rather than silently corrupting it. See [Architecture](#architecture) below
 for the specifics of what's currently supported.
 
+## What you can do with it
+
+Click any element on the canvas — including nested elements inside shared components, not just
+component roots — and:
+
+- **Resize & space it** — on-canvas drag handles or the side panel, mapped onto the Tailwind
+  spacing scale when it lands on an exact step, an arbitrary-value class (`h-[72px]`) otherwise
+- **Restyle it** — font size, weight, line height, letter spacing, and color, via direct steppers
+  and swatches on a floating toolbar that follows the selection (font size/color/background are
+  one click; everything else is one click behind "More")
+- **Edit text in place** — double-click to edit JSX text content directly on the canvas
+- **Move, duplicate, or delete it** — drag-to-reorder with an insertion-line indicator, `⌘D` to
+  duplicate, delete with a confirm gate on nested elements
+- **Pick a color with the OS color picker** — a real swatch input, not a hex field you have to
+  know values for; recent colors are remembered
+- **Choose instance vs. shared scope** — an explicit prompt when an edit could apply to just this
+  usage or to every usage of a shared component
+- **Preview responsive** — a 1440/768/390px device switcher with breakpoint-aware Tailwind
+  read/write (mobile edits the base class, tablet/desktop write `md:`/`lg:`, and edits never
+  cross-contaminate another breakpoint's class)
+- **Browse via Pages and Layers** — a route-derived, collapsible Pages tree and a semantic Layers
+  tree, not a raw DOM dump
+- **Review, keep, or undo** — every edit lands as a real source diff; a Review panel shows what
+  changed with Keep/Undo per change, plus full source-level Undo/Redo (not just an in-memory
+  history — it round-trips through the actual file writes)
+
 ## Architecture
 
 A pnpm workspace with two packages:
@@ -55,8 +81,11 @@ apps/dev/         Dev-time visual editor: HTTP proxy + host shell + browser-side
 
 ### `packages/core`
 
-- **`parse.ts`** — source files → a `ComponentGraph` (recast-wrapped Babel parser, so mutations
-  reprint only the changed subtree instead of the whole file).
+- **`parse.ts` / `graph.ts` / `load.ts`** — source files → a `ComponentGraph` (recast-wrapped
+  Babel parser, so mutations reprint only the changed subtree instead of the whole file). Detects
+  both `function`- and arrow-function-defined components, including `forwardRef`.
+- **`element-tree.ts`** — resolves a component's JSX into an addressable `ElementPath` tree, so any
+  nested node (not just a component root) can be targeted, moved, duplicated, or deleted.
 - **`class-ir.ts`** — a typed intermediate representation for `className` expressions. Every shape
   either matches a supported pattern or comes back as `{ kind: "unsupported", reason }` — there is
   no silent fallback.
@@ -66,16 +95,24 @@ apps/dev/         Dev-time visual editor: HTTP proxy + host shell + browser-side
     template literals; ternaries on a derived variable (`const isX = variant === "x"; isX ? A : B`
     — traced dataflow is deliberately out of scope for now); nested/chained ternaries; anything
     else unrecognized.
+- **`style-ir.ts`** — a backend-agnostic property model: the same visual edit (e.g. "set height to
+  72px") can be written as a Tailwind utility class or an inline `style={{}}` object, chosen by
+  what the element already uses. Precedence between the two follows the real CSS cascade (inline
+  style checked before Tailwind), and an empirical computed-style cross-check (pre-write vs.
+  post-write) catches cases where external CSS silently overrides the write.
+- **`text-ir.ts`** — narrowly-scoped inline text editing: single-text-leaf JSX elements only.
 - **`resolve.ts`** — routes a DOM click (or a route + component name) to the right source target:
-  the shared definition, or one specific call-site usage. Fails loudly ("can't disambiguate")
-  rather than guessing when a component has multiple usages in one file that can't be told apart.
-- **`mutate/`** — deterministic, targeted mutations: `class.ts` (set a ternary branch, without
-  ever collapsing it to a flat string), `prop.ts` (per-instance prop overrides), `move.ts`
-  (reorder JSX children as a whitespace-preserving chunk), `tailwind.ts` (token-exact utility
-  class replacement — `p-4` → `p-6` never touches `sm:p-4`).
-- **`tailwind-scale.ts` / `properties.ts`** — maps a visual property edit (e.g. height in px) onto
-  the Tailwind spacing scale when it lands on an exact step, falling back to an arbitrary-value
-  class (`h-[72px]`) rather than silently rounding.
+  the shared definition, or one specific call-site usage. Walks through Server/Client Component
+  boundaries and children-forwarding wrapper components. Fails loudly ("can't disambiguate") rather
+  than guessing when a component has multiple usages in one file that can't be told apart.
+- **`mutate/`** — deterministic, targeted mutations: `class.ts` (set a ternary/`clsx` branch,
+  without ever collapsing it to a flat string), `style.ts` (inline-style edits), `tailwind.ts`
+  (token-exact utility class replacement — `p-4` → `p-6` never touches `sm:p-4`), `prop.ts`
+  (per-instance prop overrides), `move.ts` (reorder JSX children as a whitespace-preserving chunk
+  with explicit insertion position), `text.ts`, `duplicate.ts`, `delete.ts`.
+- **`tailwind-scale.ts` / `properties.ts`** — maps a visual property edit onto the Tailwind spacing
+  scale when it lands on an exact step, falling back to an arbitrary-value class rather than
+  silently rounding.
 - **`write.ts`** — recast-based reprinting: only the mutated subtree changes, so diffs stay small
   and human-reviewable.
 
@@ -88,10 +125,14 @@ apps/dev/         Dev-time visual editor: HTTP proxy + host shell + browser-side
   `layout.tsx` — the injection happens at the HTTP layer, in front of the server.
 - **`static/preload.js`** — runs in the target page; walks up from a clicked DOM node via React's
   fiber tree (`_debugInfo`, since React 19 removed `_debugSource`) to resolve the click to the
-  owning component, including through Server Component nesting.
-- **`host.ts`** / **`static/host.html`** — the editor shell: iframe of your app + a component list
-  + a properties panel (height, padding, instance-vs-shared scope picker), talking to the proxy
-  and to `packages/core`'s mutation functions.
+  owning component, including through Server Component nesting and client-boundary wrappers
+  (e.g. `next/link`).
+- **`host.ts`** / **`static/host.html`** — the editor shell: iframe of your app, a Pages/Layers
+  tree, a floating on-canvas toolbar, a properties panel, a device-width switcher, and a Review
+  diff panel with per-change Keep/Undo — talking to the proxy and to `packages/core`'s mutation
+  functions.
+- **`history.ts`** / **`state.ts`** — source-level Undo/Redo and the pending-changes ledger that
+  backs the Review panel.
 
 ## Getting started
 
@@ -120,10 +161,15 @@ project: `fixtures/onlook-validation-app`.
 
 ## Status
 
-Early and actively evolving — engine and dev-tool pieces above are implemented and tested;
-the polished canvas UI (drag/resize wired into the visual editor, a git-diff review step) is not
-built yet. Expect the supported-pattern boundary in `class-ir.ts` to expand over time rather than
-all at once — patterns outside it fail with an explicit reason rather than being silently mishandled.
+Early and actively evolving, but the core loop works end to end: parse a real Next.js project,
+click into a live page (including nested elements inside shared components), edit size/spacing/
+typography/color/text, see it apply instantly via HMR, and get a clean, reviewable source diff with
+real Undo/Redo. Validated against multiple real-world codebases, not just the bundled fixture.
+
+Expect the supported-pattern boundary in `class-ir.ts` to expand over time rather than all at once —
+patterns outside it fail with an explicit reason rather than being silently mishandled. Next up:
+further simplifying the editing UX, and a "Visual Review" flow for sharing a diff with someone else
+before it lands.
 
 ## License
 
