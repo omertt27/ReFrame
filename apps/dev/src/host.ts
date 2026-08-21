@@ -44,7 +44,7 @@ import {
   type ViewportTier,
 } from "@reframe/core";
 
-import { pushHistory, redo, undo } from "./history.js";
+import { discardPending, pushHistory, redo, undo } from "./history.js";
 import type { AppState } from "./state.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -242,6 +242,16 @@ function breadcrumbFor(root: t.JSXElement | t.JSXFragment, path: number[]): stri
     names.push(elementTagName(node) ?? "Fragment");
   }
   return names;
+}
+
+/** The Changes-panel grouping key for a history entry: the component's own
+ * name (more meaningful than its root JSX tag) followed by any nested tag
+ * names a path descends through — e.g. ["Hero", "button"]. Reuses
+ * breadcrumbFor's tag walk but swaps in the component name for its root
+ * entry, since "Hero" reads better than "section" as the group heading. */
+function elementBreadcrumb(component: string, root: t.JSXElement | t.JSXFragment, path?: number[]): string[] {
+  if (!path || path.length === 0) return [component];
+  return [component, ...breadcrumbFor(root, path).slice(1)];
 }
 
 type Backend = "tailwind" | "style";
@@ -670,10 +680,18 @@ function applyStyleColorEdit(styleAttr: StyleAttrRef, prop: PropertyDef, value: 
   return before.available ? before.value : null;
 }
 
-function recordAndWrite(state: AppState, filePath: string, before: string, description: string) {
+interface ChangeMeta {
+  description: string;
+  breadcrumb: string[];
+  propertyLabel: string;
+  beforeValue: string;
+  afterValue: string;
+}
+
+function recordAndWrite(state: AppState, filePath: string, before: string, meta: ChangeMeta) {
   const after = printFile(state.graph, filePath);
   writeFileSync(join(state.targetDir, filePath), after, "utf8");
-  pushHistory(state, { filePath, before, after, description });
+  pushHistory(state, { filePath, before, after, ...meta });
   return { after, diff: createPatch(filePath, before, after, "", "") };
 }
 
@@ -743,9 +761,56 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
 
     if (req.method === "GET" && req.url === "/__reframe/history") {
       sendJson(res, 200, {
-        history: state.history.map(({ id, filePath, description }) => ({ id, filePath, description })),
+        history: state.history.map((h) => ({
+          id: h.id,
+          filePath: h.filePath,
+          description: h.description,
+          breadcrumb: h.breadcrumb,
+          propertyLabel: h.propertyLabel,
+          beforeValue: h.beforeValue,
+          afterValue: h.afterValue,
+        })),
         canRedo: state.redoStack.length > 0,
+        pendingCount: state.history.length - state.reviewedCount,
       });
+      return;
+    }
+
+    // Squashes every still-pending edit into one diff per touched file
+    // (oldest "before" -> current "after"), so reviewing "changed the CTA
+    // color, then its height" produces one clean Hero.tsx diff, not two
+    // separate hunks — the same shape a developer would actually commit.
+    if (req.method === "GET" && req.url === "/__reframe/review") {
+      const pending = state.history.slice(state.reviewedCount);
+      const byFile = new Map<string, { before: string; after: string }>();
+      for (const h of pending) {
+        const existing = byFile.get(h.filePath);
+        if (existing) existing.after = h.after;
+        else byFile.set(h.filePath, { before: h.before, after: h.after });
+      }
+      const files = [...byFile.entries()].map(([filePath, { before, after }]) => ({
+        filePath,
+        diff: createPatch(filePath, before, after, "", ""),
+      }));
+      sendJson(res, 200, { files, changeCount: pending.length });
+      return;
+    }
+
+    // "Keep changes": acknowledges every currently-pending entry as
+    // reviewed. Doesn't touch disk or history — the edits are already
+    // live in the working tree — it only resets the Changes badge and
+    // narrows what the next Review diff squashes together.
+    if (req.method === "POST" && req.url === "/__reframe/keep") {
+      state.reviewedCount = state.history.length;
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // Bulk "Undo" from the Review diff panel: reverts every still-pending
+    // entry (most recent first), leaving already-kept history untouched.
+    if (req.method === "POST" && req.url === "/__reframe/discard-pending") {
+      const count = discardPending(state);
+      sendJson(res, 200, { ok: true, count });
       return;
     }
 
@@ -942,7 +1007,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               if (!styleAttr) throw new Error(`"${component}" has no editable inline style`);
               const beforeValue = applyStyleColorEdit(styleAttr, propDef, value);
               const description = `${component} ${propDef.label}: ${beforeValue ?? "not set"} → ${value} (this instance, style)`;
-              const { diff } = recordAndWrite(state, def.filePath, before, description);
+              const { diff } = recordAndWrite(state, def.filePath, before, {
+                description,
+                breadcrumb: elementBreadcrumb(component, def.rootElement, hasPath ? path : undefined),
+                propertyLabel: propDef.label,
+                beforeValue: beforeValue ?? "not set",
+                afterValue: value,
+              });
               sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
               return;
             }
@@ -1012,7 +1083,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             // there.
             const tierLabel = backend === "tailwind" && tier !== "desktop" ? `, ${tier}` : "";
             const description = `${component} ${propDef.label}: ${beforePx !== null ? beforePx + "px" : "not set"} → ${px}px (${scopeLabel}, ${backend}${tierLabel})`;
-            const { diff } = recordAndWrite(state, def.filePath, before, description);
+            const { diff } = recordAndWrite(state, def.filePath, before, {
+              description,
+              breadcrumb: elementBreadcrumb(component, def.rootElement, hasPath ? path : undefined),
+              propertyLabel: propDef.label,
+              beforeValue: beforePx !== null ? `${beforePx}px` : "not set",
+              afterValue: `${px}px`,
+            });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
           } catch (err) {
@@ -1048,7 +1125,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             if (!result.ok) throw new Error(result.reason);
 
             const description = `${component} text: "${truncate(beforeValue ?? "")}" → "${truncate(value)}"`;
-            const { diff } = recordAndWrite(state, def.filePath, before, description);
+            const { diff } = recordAndWrite(state, def.filePath, before, {
+              description,
+              breadcrumb: elementBreadcrumb(component, def.rootElement, path && path.length > 0 ? path : undefined),
+              propertyLabel: "Text",
+              beforeValue: `"${truncate(beforeValue ?? "")}"`,
+              afterValue: `"${truncate(value)}"`,
+            });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
           } catch (err) {
@@ -1093,7 +1176,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             const before = printFile(graph, def.filePath);
             removeElement(parent, path[path.length - 1]!);
             const description = `${component}: removed <${label}>`;
-            const { diff } = recordAndWrite(state, def.filePath, before, description);
+            const { diff } = recordAndWrite(state, def.filePath, before, {
+              description,
+              breadcrumb: elementBreadcrumb(component, def.rootElement, path),
+              propertyLabel: "Removed",
+              beforeValue: `<${label}>`,
+              afterValue: "—",
+            });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
           } catch (err) {
@@ -1136,7 +1225,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             const before = printFile(graph, def.filePath);
             duplicateElement(parent, path[path.length - 1]!);
             const description = `${component}: duplicated <${label}>`;
-            const { diff } = recordAndWrite(state, def.filePath, before, description);
+            const { diff } = recordAndWrite(state, def.filePath, before, {
+              description,
+              breadcrumb: elementBreadcrumb(component, def.rootElement, path),
+              propertyLabel: "Duplicated",
+              beforeValue: "—",
+              afterValue: `<${label}>`,
+            });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
           } catch (err) {
@@ -1170,7 +1265,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             moveChild(pageDef.rootElement, fromIndex, toIndex, insertBefore);
 
             const description = `${fromName ?? "Section"} moved to ${toName ?? "a new"} position on ${routeDisplayName(route)}`;
-            const { diff } = recordAndWrite(state, pageDef.filePath, before, description);
+            const { diff } = recordAndWrite(state, pageDef.filePath, before, {
+              description,
+              breadcrumb: [routeDisplayName(route)],
+              propertyLabel: "Position",
+              beforeValue: fromName ?? "Section",
+              afterValue: `moved to ${toName ?? "new position"}`,
+            });
 
             sendJson(res, 200, { ok: true, filePath: pageDef.filePath, diff });
           } catch (err) {

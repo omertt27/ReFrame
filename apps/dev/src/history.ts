@@ -26,6 +26,10 @@ export function undo(state: AppState): HistoryEntry | null {
   writeFileSync(join(state.targetDir, entry.filePath), entry.before, "utf8");
   rebuildGraph(state);
   state.redoStack.push(entry);
+  // A step-by-step undo can reach back past what "Keep changes" already
+  // acknowledged — clamp so the pending count in /__reframe/history never
+  // goes negative.
+  state.reviewedCount = Math.min(state.reviewedCount, state.history.length);
   return entry;
 }
 
@@ -36,4 +40,17 @@ export function redo(state: AppState): HistoryEntry | null {
   rebuildGraph(state);
   state.history.push(entry);
   return entry;
+}
+
+/** Reverts every still-pending (not yet "kept") entry, most recent first —
+ * the bulk "Undo" action in the Review diff panel. Reuses undo() one entry
+ * at a time so each discarded edit still lands on the redo stack individually,
+ * exactly as if a developer had pressed Cmd+Z that many times. */
+export function discardPending(state: AppState): number {
+  let count = 0;
+  while (state.history.length > state.reviewedCount) {
+    if (!undo(state)) break;
+    count++;
+  }
+  return count;
 }

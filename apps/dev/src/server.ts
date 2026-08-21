@@ -1,4 +1,4 @@
-import { buildComponentGraph, loadProjectFiles } from "@reframe/core";
+import { buildComponentGraph, loadProjectFiles, resolveProjectBaseDir } from "@reframe/core";
 
 import { startHostServer } from "./host.js";
 import { startProxyServer } from "./proxy.js";
@@ -32,7 +32,14 @@ console.log(`[reframe] parsing ${targetDir} ...`);
 const graph = buildComponentGraph(loadProjectFiles(targetDir));
 console.log(`[reframe] parsed ${graph.files.size} files, ${graph.definitions.size} components`);
 
-const state: AppState = { graph, targetDir, history: [], redoStack: [], nextId: 1 };
+// Every ComponentDef.filePath is relative to resolveProjectBaseDir(targetDir),
+// NOT targetDir itself — they silently diverge for a src/app-layout project
+// (targetDir/src vs targetDir). state.targetDir feeds every on-disk write
+// (recordAndWrite, undo, redo), so it has to be the SAME base loadProjectFiles
+// used, or every write fails outright (ENOENT) regardless of which file it's
+// touching — found live against the real PrivaPDF project, which uses src/app.
+const baseDir = resolveProjectBaseDir(targetDir);
+const state: AppState = { graph, targetDir: baseDir, history: [], redoStack: [], nextId: 1, reviewedCount: 0 };
 
 startProxyServer(targetPort, proxyPort, state);
 startHostServer(hostPort, proxyPort, state);

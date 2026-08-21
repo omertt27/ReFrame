@@ -39,7 +39,18 @@ export type StyleWriteResult = { ok: true } | { ok: false; reason: string };
  */
 function appendObjectProperty(ir: Extract<StyleIR, { kind: "object" }>, propertySource: string): void {
   const currentText = recast.print(ir.node).code;
-  const inner = currentText.trim().replace(/^\{/, "").replace(/\}$/, "").trim();
+  // A trailing comma before the closing brace (common in multi-line object
+  // literals, e.g. Prettier's default style) survived stripping the braces
+  // — appending ", <newProp>" after it produced a double comma
+  // ("...ink)",, padding: 8"), which is invalid syntax and made the
+  // reparse below throw. Found live against a real multi-line style object
+  // with a trailing comma; strip it the same way the braces themselves are.
+  const inner = currentText
+    .trim()
+    .replace(/^\{/, "")
+    .replace(/\}$/, "")
+    .trim()
+    .replace(/,\s*$/, "");
   const newText = inner.length > 0 ? `{ ${inner}, ${propertySource} }` : `{ ${propertySource} }`;
   // Parsed as the RHS of an assignment, not wrapped in `(...)` — a bare
   // `{...}` at statement position parses as a BlockStatement, but wrapping

@@ -871,8 +871,22 @@
     return true;
   }
 
+  // Server-confirmed answer to "is the CURRENT selection's text actually
+  // safe to rewrite" (host.html's renderProperties posts this right after
+  // every resolve) — the DOM-shape check in enterInlineTextEdit alone can't
+  // tell a real single-string JSX text child from something like
+  // `{loading ? "..." : "Drop your PDF..."}`, which also renders as one
+  // plain text node at any given moment but would silently fail to save.
+  var textEditableForSelection = false;
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "reframe-text-editable") return;
+    textEditableForSelection = !!data.editable;
+  });
+
   document.addEventListener("dblclick", function (event) {
     if (event.target !== lastSelectedElement) return;
+    if (!textEditableForSelection) return;
     event.preventDefault();
     enterInlineTextEdit(event.target);
   });

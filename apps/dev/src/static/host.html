@@ -430,6 +430,10 @@
       #canvas-popup .color-input-row input[type="color"] {
         border-color: #e2e2e8;
       }
+      .color-swatch-input.swatch-unresolved {
+        outline: 2px dashed #f4a340;
+        outline-offset: 1px;
+      }
       #canvas-popup .color-input-row select.font-preset-select {
         background: #f7f7fa;
         border: 1px solid #e2e2e8;
@@ -791,26 +795,95 @@
         border-radius: 8px;
         margin: 0;
       }
-      .change-row {
+      .changes-header-row {
         display: flex;
-        justify-content: space-between;
         align-items: center;
-        gap: 8px;
-        padding: 6px 8px;
-        border-radius: 6px;
+        justify-content: space-between;
+      }
+      .changes-header-row h2 {
+        margin: 0;
+      }
+      .change-group {
+        border: 1px solid #222;
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
         font-size: 12px;
       }
-      .change-row:hover {
-        background: #1a1a1d;
+      .change-breadcrumb {
+        font-weight: 600;
+        margin-bottom: 4px;
+        word-break: break-word;
       }
-      .change-row .desc {
+      .change-prop {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 2px 0;
+        color: #d0d0d3;
+      }
+      .change-prop .prop-label {
+        color: #8a8a90;
+      }
+      .change-prop .prop-value {
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        text-align: right;
       }
-      .change-row .file {
+      .change-group .file {
         color: #6b6b70;
         font-size: 10px;
+        margin-top: 4px;
+      }
+      #btn-review,
+      #btn-review-undo,
+      #btn-review-keep {
+        background: #1c1c1f;
+        color: #d0d0d3;
+        border: 1px solid #2a2a2e;
+        border-radius: 6px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      #btn-review:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      #btn-review-keep.primary {
+        background: #f4a340;
+        color: #17171a;
+        border-color: #f4a340;
+        font-weight: 600;
+      }
+      .review-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+      }
+      .review-summary {
+        font-size: 12px;
+        color: #8a8a90;
+        margin-top: 10px;
+        line-height: 1.6;
+      }
+      #review-files .file-diff {
+        margin-bottom: 12px;
+      }
+      #review-files .file-name {
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      .link-btn {
+        background: none;
+        border: none;
+        color: #8a8a90;
+        font-size: 12px;
+        cursor: pointer;
+        padding: 8px 0 0;
+        text-decoration: underline;
       }
     </style>
   </head>
@@ -857,11 +930,23 @@
             <div id="properties-body">
               <div class="empty">Click something in the canvas, or select it from Pages.</div>
             </div>
-            <h2 style="margin-top: 24px">Last diff</h2>
+            <h2 style="margin-top: 24px">Last action</h2>
             <pre id="diff">(no edit yet)</pre>
-            <h2 style="margin-top: 24px">Changes</h2>
+            <div class="changes-header-row" style="margin-top: 24px">
+              <h2 id="changes-title">Changes</h2>
+              <button id="btn-review" disabled>Review diff</button>
+            </div>
             <div id="changes-body">
               <div class="empty">No edits yet.</div>
+            </div>
+            <div id="review-panel" style="display: none">
+              <div id="review-files"></div>
+              <div id="review-summary" class="review-summary"></div>
+              <div class="review-actions">
+                <button id="btn-review-undo">Undo</button>
+                <button id="btn-review-keep" class="primary">Keep changes</button>
+              </div>
+              <button id="btn-review-back" class="link-btn">‹ Back to changes</button>
             </div>
           </div>
         </div>
@@ -1511,6 +1596,19 @@
         var titleAttr = prop && prop.backend ? ' title="Writes to: ' + prop.backend + '"' : "";
         var isHex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value);
         var pickerValue = isHex ? (value.length === 4 ? expandHex3(value) : value) : "#000000";
+        // A var()/named value (e.g. "var(--accent)") can't be shown in a
+        // native <input type="color"> at all — it only understands hex.
+        // Silently defaulting its swatch to black looked like a real (and
+        // wrong) answer sitting right next to the honest value in the text
+        // field beside it — someone reported this as ReFrame "showing two
+        // different colors" for the same property, which is exactly what
+        // was happening. Left enabled (dragging it to pick a color is a
+        // legitimate way to replace a var() with a solid one) but visually
+        // marked so the swatch never reads as a confident, correct preview.
+        var pickerUnresolved = value !== "" && !isHex;
+        var pickerTitle = pickerUnresolved
+          ? ' title="Placeholder only - this value cannot be shown as a plain color. Pick a color here to replace it with a solid one."'
+          : "";
         return (
           '<div class="field">' +
           "<label" +
@@ -1519,11 +1617,15 @@
           label +
           "</label>" +
           '<div class="color-input-row">' +
-          '<input type="color" class="color-swatch-input" data-color-for="' +
+          '<input type="color" class="color-swatch-input' +
+          (pickerUnresolved ? " swatch-unresolved" : "") +
+          '" data-color-for="' +
           key +
           '" value="' +
           pickerValue +
-          '" ' +
+          '"' +
+          pickerTitle +
+          " " +
           (disabled ? "disabled" : "") +
           " />" +
           '<input type="text" data-property="' +
@@ -1713,6 +1815,7 @@
       function closeCanvasToolbar() {
         closeCanvasPopup();
         document.getElementById("canvas-toolbar").style.display = "none";
+        postToFrame({ type: "reframe-text-editable", editable: false });
       }
 
       // Each popup trigger renders its OWN, narrow content — a single color
@@ -2065,6 +2168,8 @@
               var picker = container.querySelector('.color-swatch-input[data-color-for="' + el.getAttribute("data-property") + '"]');
               if (picker && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(el.value)) {
                 picker.value = el.value.length === 4 ? expandHex3(el.value) : el.value;
+                picker.classList.remove("swatch-unresolved");
+                picker.removeAttribute("title");
               }
             } else {
               mutate(el.getAttribute("data-property"), Number(el.value), el.getAttribute("data-backend"));
@@ -2093,6 +2198,8 @@
           var textEl = container.querySelector('input[data-property="' + key + '"][data-value-kind="color"]');
           picker.addEventListener("input", function () {
             if (textEl) textEl.value = picker.value;
+            picker.classList.remove("swatch-unresolved");
+            picker.removeAttribute("title");
           });
           picker.addEventListener("change", function () {
             mutateColor(key, picker.value, textEl ? textEl.getAttribute("data-backend") : "");
@@ -2108,7 +2215,11 @@
             event.stopPropagation();
             var hex = swatch.getAttribute("data-recent-color");
             if (textEl) textEl.value = hex;
-            if (picker) picker.value = hex;
+            if (picker) {
+              picker.value = hex;
+              picker.classList.remove("swatch-unresolved");
+              picker.removeAttribute("title");
+            }
             mutateColor(key, hex, textEl ? textEl.getAttribute("data-backend") : "");
           });
         });
@@ -2299,6 +2410,20 @@
 
         updateCanvasToolbar();
         updateResizeHandles();
+
+        // preload.js's own double-click-to-edit-text listener lives inside
+        // the target iframe and has no access to `current` — without this,
+        // it only had a DOM-shape check (one text-node child) to decide
+        // whether to engage contenteditable, which happily agrees for a
+        // ternary like `{loading ? "..." : "Drop your PDF..."}` since it
+        // renders as plain text at any given moment. That let a user type a
+        // "successful-looking" edit that the server would then silently
+        // reject on commit (text.editable false: "content is a dynamic
+        // expression"), leaving stale, never-saved text sitting in the
+        // canvas with no visible revert. Telling the iframe the real,
+        // server-confirmed answer closes that gap at the source, the same
+        // gate the toolbar's pencil button already uses.
+        postToFrame({ type: "reframe-text-editable", editable: !!(current.text && current.text.editable) });
       }
 
       // A handle that's visible and looks draggable but silently does
@@ -2604,30 +2729,71 @@
           });
       }
 
+      // Folds consecutive history entries touching the same element (same
+      // breadcrumb + file) into one card, and within a card keeps only the
+      // first beforeValue and last afterValue seen per property — so
+      // "Height 48->50, then 50->44" reads as one net "Height 48px -> 44px"
+      // row, matching what a developer would actually want to review.
+      function groupHistoryEntries(history) {
+        var groups = [];
+        var lastKey = null;
+        history.forEach(function (h) {
+          var key = h.breadcrumb.join(" / ") + "::" + h.filePath;
+          var group = key === lastKey ? groups[groups.length - 1] : null;
+          if (!group) {
+            group = { breadcrumb: h.breadcrumb, filePath: h.filePath, props: [], propIndex: {} };
+            groups.push(group);
+            lastKey = key;
+          }
+          if (Object.prototype.hasOwnProperty.call(group.propIndex, h.propertyLabel)) {
+            group.props[group.propIndex[h.propertyLabel]].afterValue = h.afterValue;
+          } else {
+            group.propIndex[h.propertyLabel] = group.props.length;
+            group.props.push({ propertyLabel: h.propertyLabel, beforeValue: h.beforeValue, afterValue: h.afterValue });
+          }
+        });
+        return groups.reverse();
+      }
+
       function refreshHistory() {
-        fetch("/__reframe/history")
+        return fetch("/__reframe/history")
           .then(function (r) {
             return r.json();
           })
           .then(function (data) {
             document.getElementById("btn-undo").disabled = data.history.length === 0;
             document.getElementById("btn-redo").disabled = !data.canRedo;
+            document.getElementById("changes-title").textContent = "Changes" + (data.pendingCount > 0 ? " · " + data.pendingCount : "");
+            document.getElementById("btn-review").disabled = data.pendingCount === 0;
 
             var body = document.getElementById("changes-body");
             if (data.history.length === 0) {
               body.innerHTML = '<div class="empty">No edits yet.</div>';
               return;
             }
-            body.innerHTML = data.history
-              .slice()
-              .reverse()
-              .map(function (h) {
+            body.innerHTML = groupHistoryEntries(data.history)
+              .map(function (g) {
+                var rows = g.props
+                  .map(function (p) {
+                    return (
+                      '<div class="change-prop"><span class="prop-label">' +
+                      escapeHtml(p.propertyLabel) +
+                      '</span><span class="prop-value">' +
+                      escapeHtml(p.beforeValue) +
+                      " → " +
+                      escapeHtml(p.afterValue) +
+                      "</span></div>"
+                    );
+                  })
+                  .join("");
                 return (
-                  '<div class="change-row"><div><div class="desc">' +
-                  h.description +
-                  '</div><div class="file">' +
-                  h.filePath +
-                  "</div></div></div>"
+                  '<div class="change-group"><div class="change-breadcrumb">' +
+                  g.breadcrumb.map(escapeHtml).join(" / ") +
+                  "</div>" +
+                  rows +
+                  '<div class="file">' +
+                  escapeHtml(g.filePath) +
+                  "</div></div>"
                 );
               })
               .join("");
@@ -2653,6 +2819,84 @@
       document.getElementById("btn-redo").addEventListener("click", function () {
         undoOrRedo("redo");
       });
+
+      // Review diff panel — the "would I willingly submit this diff?" trust
+      // surface. Squashes every still-pending edit per file (server-side, via
+      // /__reframe/review) so reviewing several small edits to the same
+      // element reads as one clean diff, not one hunk per property change.
+      function showReviewPanel() {
+        fetch("/__reframe/review")
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function (data) {
+            var filesEl = document.getElementById("review-files");
+            var addedLines = 0;
+            var removedLines = 0;
+            filesEl.innerHTML = data.files
+              .map(function (f) {
+                var lines = f.diff.split("\n");
+                lines.forEach(function (line) {
+                  if (line.indexOf("+++") === 0 || line.indexOf("---") === 0) return;
+                  if (line.charAt(0) === "+") addedLines++;
+                  else if (line.charAt(0) === "-") removedLines++;
+                });
+                return (
+                  '<div class="file-diff"><div class="file-name">' +
+                  escapeHtml(f.filePath) +
+                  "</div><pre>" +
+                  escapeHtml(f.diff || "(no textual change)") +
+                  "</pre></div>"
+                );
+              })
+              .join("");
+            document.getElementById("review-summary").innerHTML =
+              "✓ " +
+              data.files.length +
+              (data.files.length === 1 ? " file" : " files") +
+              "<br>✓ " +
+              (addedLines + removedLines) +
+              " lines changed" +
+              "<br>✓ Only what you edited — nothing else touched";
+            document.getElementById("changes-body").style.display = "none";
+            document.getElementById("btn-review").style.display = "none";
+            document.getElementById("review-panel").style.display = "block";
+          });
+      }
+
+      function hideReviewPanel() {
+        document.getElementById("review-panel").style.display = "none";
+        document.getElementById("changes-body").style.display = "";
+        document.getElementById("btn-review").style.display = "";
+      }
+
+      document.getElementById("btn-review").addEventListener("click", showReviewPanel);
+      document.getElementById("btn-review-back").addEventListener("click", hideReviewPanel);
+
+      document.getElementById("btn-review-keep").addEventListener("click", function () {
+        fetch("/__reframe/keep", { method: "POST" })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function () {
+            hideReviewPanel();
+            refreshHistory();
+          });
+      });
+
+      document.getElementById("btn-review-undo").addEventListener("click", function () {
+        fetch("/__reframe/discard-pending", { method: "POST" })
+          .then(function (r) {
+            return r.json();
+          })
+          .then(function () {
+            hideReviewPanel();
+            refreshHistory().then(function () {
+              if (current) resolveSelection(current.component, current.route, current.path);
+            });
+          });
+      });
+
       window.addEventListener("keydown", function (event) {
         var mod = event.metaKey || event.ctrlKey;
         if (mod && event.key.toLowerCase() === "z") {
