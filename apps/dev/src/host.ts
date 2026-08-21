@@ -1150,12 +1150,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
     if (req.method === "POST" && req.url === "/__reframe/reorder") {
       readJsonBody(req)
         .then((body) => {
-          const { route, fromIndex, toIndex, fromName, toName } = body as {
+          const { route, fromIndex, toIndex, fromName, toName, insertBefore } = body as {
             route?: string;
             fromIndex?: number;
             toIndex?: number;
             fromName?: string;
             toName?: string;
+            insertBefore?: boolean;
           };
           if (typeof route !== "string" || typeof fromIndex !== "number" || typeof toIndex !== "number") {
             sendJson(res, 400, { ok: false, error: "expected { route, fromIndex, toIndex }" });
@@ -1166,7 +1167,7 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
             if (!pageDef) throw new Error(`No page found for route "${route}"`);
 
             const before = printFile(graph, pageDef.filePath);
-            moveChild(pageDef.rootElement, fromIndex, toIndex);
+            moveChild(pageDef.rootElement, fromIndex, toIndex, insertBefore);
 
             const description = `${fromName ?? "Section"} moved to ${toName ?? "a new"} position on ${routeDisplayName(route)}`;
             const { diff } = recordAndWrite(state, pageDef.filePath, before, description);

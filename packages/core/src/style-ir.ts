@@ -47,7 +47,23 @@ export type StylePropertyIR =
   | { kind: "unsupported"; reason: string; node: t.Node };
 
 export type StyleIR =
-  | { kind: "object"; properties: Map<string, StylePropertyIR>; node: t.ObjectExpression; hasUnsupportedComputedKeys: boolean }
+  | {
+      kind: "object";
+      properties: Map<string, StylePropertyIR>;
+      node: t.ObjectExpression;
+      /** The JSXExpressionContainer wrapping `node` (`style={<here>}`) — kept
+       * alongside `node` so a write that ADDS a new property (as opposed to
+       * changing an existing one in place) can swap in a freshly-reparsed
+       * replacement object instead of pushing onto `node.properties`
+       * in-place. See mutate/style.ts's `appendObjectProperty` for why: a
+       * plain array push forces recast to fall back to its from-scratch
+       * printer for the whole object (which always multi-lines it, even a
+       * two-property one-liner), while a node swap built from a reparsed
+       * snippet reprints as the clean one-line diff a hand-written edit
+       * would produce. */
+      container: t.JSXExpressionContainer;
+      hasUnsupportedComputedKeys: boolean;
+    }
   | { kind: "unsupported"; reason: string };
 
 /** e.g. "12px 24px" or "10px 20px 10px 20px" — two or more independent
@@ -119,5 +135,5 @@ export function extractStyleIR(attr: t.JSXAttribute): StyleIR | null {
     if (!t.isExpression(prop.value)) continue;
     properties.set(keyName, extractStyleProperty(prop.value, prop));
   }
-  return { kind: "object", properties, node: expr, hasUnsupportedComputedKeys };
+  return { kind: "object", properties, node: expr, container: value, hasUnsupportedComputedKeys };
 }

@@ -103,8 +103,28 @@
     "[data-reframe-section]:hover{outline-color:rgba(244,163,64,0.55);}" +
     "[data-reframe-section].reframe-dragging{opacity:0.35;cursor:grabbing;}" +
     "[data-reframe-section].reframe-drop-target{outline-color:#f4a340;outline-width:3px;background-color:rgba(244,163,64,0.06);}" +
-    ".reframe-hover-outline{outline:1.5px dashed rgba(99,102,241,0.55) !important;outline-offset:-1.5px !important;cursor:pointer !important;}";
+    ".reframe-hover-outline{outline:1.5px dashed rgba(99,102,241,0.55) !important;outline-offset:-1.5px !important;cursor:pointer !important;}" +
+    "#reframe-insertion-line{position:fixed;height:3px;background:#f4a340;border-radius:2px;box-shadow:0 0 0 3px rgba(244,163,64,0.18);pointer-events:none;z-index:2147483647;display:none;}";
   document.head.appendChild(style);
+
+  // The precise "it will land HERE" affordance — a thin line at the exact
+  // edge (top or bottom half, whichever the pointer is over) of the hovered
+  // section, replacing "which section glowed" as the thing a user reads to
+  // predict the drop outcome. The whole-section outline above stays too
+  // (still useful to see WHICH section is being considered at a glance) but
+  // the line is what answers "before or after it, exactly."
+  var insertionLine = document.createElement("div");
+  insertionLine.id = "reframe-insertion-line";
+  document.body.appendChild(insertionLine);
+  function showInsertionLine(rect, before) {
+    insertionLine.style.left = rect.left + "px";
+    insertionLine.style.width = rect.width + "px";
+    insertionLine.style.top = (before ? rect.top : rect.bottom) - 1.5 + "px";
+    insertionLine.style.display = "block";
+  }
+  function hideInsertionLine() {
+    insertionLine.style.display = "none";
+  }
 
   function getFiber(node) {
     var key = Object.keys(node).find(function (k) {
@@ -507,6 +527,8 @@
       });
   }
 
+  var dropBefore = false; // which half of the current drop-target section the pointer is over
+
   function wireUpSections(elements) {
     sectionEls = elements;
     sectionEls.forEach(function (el, i) {
@@ -524,6 +546,7 @@
       el.addEventListener("dragend", function () {
         el.classList.remove("reframe-dragging");
         clearDropTargets();
+        hideInsertionLine();
         draggedIndex = -1;
       });
       el.addEventListener("dragover", function (event) {
@@ -532,11 +555,17 @@
         if (realIndex !== draggedIndex) {
           clearDropTargets();
           el.classList.add("reframe-drop-target");
+          var rect = el.getBoundingClientRect();
+          dropBefore = event.clientY - rect.top < rect.height / 2;
+          showInsertionLine(rect, dropBefore);
+        } else {
+          hideInsertionLine();
         }
       });
       el.addEventListener("drop", function (event) {
         event.preventDefault();
         clearDropTargets();
+        hideInsertionLine();
         if (draggedIndex === -1 || realIndex === draggedIndex) return;
         window.parent.postMessage(
           {
@@ -545,6 +574,7 @@
             route: window.location.pathname,
             fromIndex: draggedIndex,
             toIndex: realIndex,
+            insertBefore: dropBefore,
             fromName: draggedName,
             toName: SECTIONS[i].name,
           },

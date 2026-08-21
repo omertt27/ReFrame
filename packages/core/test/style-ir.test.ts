@@ -103,6 +103,27 @@ describe("style IR — writes preserve the author's number-vs-string convention"
     const result = writeStyleProperty(def.styleAttr!.ir, "background", 1);
     expect(result.ok).toBe(false);
   });
+
+  // Regression test for a real diff-noise bug found live against PrivaPDF
+  // (project memory: reframe-stress-test-round2's Finding 3): a plain
+  // `node.properties.push(...)` forces recast to fall back to its
+  // from-scratch printer for the WHOLE object, which always multi-lines a
+  // non-empty ObjectExpression regardless of how compact the original was —
+  // a two-property one-liner exploded to 4+ lines to add a single
+  // `padding: 12`. See mutate/style.ts's appendObjectProperty for the fix.
+  it("appending a new property to a compact single-line style object stays single-line (no diff noise)", () => {
+    const graph = loadStyled(
+      `export default function X() { return <div style={{ color: "var(--accent)", fontStyle: "italic" }}>x</div>; }`,
+    );
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleProperty(def.styleAttr!.ir, "padding", 12);
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after.split("\n").length).toBe(1);
+    expect(after).toContain('color: "var(--accent)"');
+    expect(after).toContain('fontStyle: "italic"');
+    expect(after).toContain("padding: 12");
+  });
 });
 
 describe("style IR — color values (hex/rgb/named/CSS-variable, all just a raw string)", () => {
@@ -141,6 +162,18 @@ describe("style IR — color values (hex/rgb/named/CSS-variable, all just a raw 
     expect(result).toEqual({ ok: true });
     const after = printFile(graph, "X.tsx");
     expect(after).toContain("height: 44");
+    expect(after).toContain('color: "var(--accent)"');
+  });
+
+  it("appending a new color property to a compact single-line style object stays single-line (no diff noise)", () => {
+    const graph = loadStyled(
+      `export default function X() { return <div style={{ height: 44, fontStyle: "italic" }}>x</div>; }`,
+    );
+    const def = resolveDefinition(graph, "X");
+    const result = writeStyleColor(def.styleAttr!.ir, "color", "var(--accent)");
+    expect(result).toEqual({ ok: true });
+    const after = printFile(graph, "X.tsx");
+    expect(after.split("\n").length).toBe(1);
     expect(after).toContain('color: "var(--accent)"');
   });
 

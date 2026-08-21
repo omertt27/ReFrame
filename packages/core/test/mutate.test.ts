@@ -239,6 +239,26 @@ describe("move / reorder children", () => {
     const home = resolveDefinition(graph, "Home");
     expect(() => moveChild(home.rootElement, 0, 99)).toThrow(/out of range/);
   });
+
+  it("honors an explicit insertBefore=true even when moving forward (default would insert after)", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    moveChild(home.rootElement, 1, 3, true); // Hero (1) -> explicitly BEFORE Button (3)
+
+    const after = printFile(graph, "Home.tsx");
+    expect(componentOrder(after, HOME_ORDER)).toEqual(["Navbar", "Card", "Hero", "Button", "Footer"]);
+  });
+
+  it("honors an explicit insertBefore=false even when moving backward (default would insert before)", () => {
+    const { graph } = loadFixture();
+    const home = resolveDefinition(graph, "Home");
+
+    moveChild(home.rootElement, 3, 1, false); // Button (3) -> explicitly AFTER Hero (1)
+
+    const after = printFile(graph, "Home.tsx");
+    expect(componentOrder(after, HOME_ORDER)).toEqual(["Navbar", "Hero", "Button", "Card", "Footer"]);
+  });
 });
 
 describe("delete element", () => {

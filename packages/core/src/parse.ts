@@ -15,9 +15,13 @@ import { extractStyleIR } from "./style-ir.js";
 /**
  * A parser adapter recast uses internally so it can track original
  * formatting per-node and later reprint only what changed (see write.ts).
- * `tokens: true` is required for recast's patch-based reprinting.
+ * `tokens: true` is required for recast's patch-based reprinting. Exported
+ * so any other mutation that needs to reparse a small source snippet (e.g.
+ * mutate/style.ts's clean-append trick) parses it with the exact same
+ * plugin set as the surrounding file, rather than a second, potentially
+ * drifting parser config.
  */
-const babelRecastParser = {
+export const babelRecastParser = {
   parse(source: string) {
     return babelParser.parse(source, {
       sourceType: "module",

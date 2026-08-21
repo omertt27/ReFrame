@@ -5,9 +5,10 @@
 <h1 align="center">ReFrame</h1>
 
 <p align="center">
-  A visual, direct-manipulation editor for existing React / Next.js codebases.
+  <strong>Your AI already built the website. ReFrame is where you visually finish it.</strong>
   <br />
-  Click, drag, resize, restyle — writes clean diffs back into your real source. No AI in the loop.
+  Click anything, make it look right — no prompt, no tokens, no regeneration, no fighting the code.
+  The source stays yours.
 </p>
 
 ---

@@ -1,8 +1,62 @@
 import * as t from "@babel/types";
+import * as recast from "recast";
 
+import { babelRecastParser } from "../parse.js";
 import type { StyleIR } from "../style-ir.js";
 
 export type StyleWriteResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Adds a brand-new property to a style={{...}} object without forcing
+ * recast to reprint the whole object multi-line.
+ *
+ * `node.properties.push(builderNode)` (the naive approach) mutates the
+ * ObjectExpression's property list in place, but recast decides how to
+ * print a node by comparing it against the `.original` it captured at
+ * parse time — once the list's length differs from that original, it can
+ * no longer reuse the source text verbatim and falls back to its
+ * from-scratch printer, which (see recast/lib/printer.js's ObjectExpression
+ * case) ALWAYS multi-lines a non-empty object. A compact `{ color: "...",
+ * fontStyle: "italic" }` one-liner becomes 4+ lines to add a single
+ * `padding: 12` — functionally correct, but far noisier than a hand-written
+ * edit, and undercuts "would I confidently commit this diff" for what's
+ * conceptually a one-line change. Verified live against the exact
+ * reproduction from project memory (a `style={{ color, fontStyle }}` prop
+ * on a real nested element).
+ *
+ * The fix: print the CURRENT object's existing text (recast reprints it
+ * verbatim here — nothing's changed about it yet), splice the new
+ * property's source into that text, and reparse the WHOLE result as one
+ * snippet. The resulting node carries its own `.original` (from being
+ * freshly parsed) that matches itself exactly, so recast's patcher reprints
+ * it verbatim too — the object as a whole is treated as "this one small
+ * subtree changed," not "everything about this list needs regenerating."
+ * Swapping it in via `ir.container.expression` (rather than mutating
+ * `ir.node` in place) is what actually matters here — recast's reprint
+ * decision is keyed off the property list's structural identity, not the
+ * containing node's object identity, so an in-place array replacement on
+ * the same node would hit the exact same fallback.
+ */
+function appendObjectProperty(ir: Extract<StyleIR, { kind: "object" }>, propertySource: string): void {
+  const currentText = recast.print(ir.node).code;
+  const inner = currentText.trim().replace(/^\{/, "").replace(/\}$/, "").trim();
+  const newText = inner.length > 0 ? `{ ${inner}, ${propertySource} }` : `{ ${propertySource} }`;
+  // Parsed as the RHS of an assignment, not wrapped in `(...)` — a bare
+  // `{...}` at statement position parses as a BlockStatement, but wrapping
+  // parens instead would leave Babel's `extra.parenthesized` flag set on
+  // the resulting ObjectExpression, which recast then dutifully reprints as
+  // a real `({ ... })` in the final output (verified live: this was the
+  // first thing that broke here — an extra pair of parens showed up around
+  // the whole object, and the enclosing JSX return statement got needlessly
+  // reformatted along with it).
+  const parsed = recast.parse(`x = ${newText}`, { parser: babelRecastParser }) as t.File;
+  const stmt = parsed.program.body[0];
+  const expr = t.isExpressionStatement(stmt) && t.isAssignmentExpression(stmt.expression) ? stmt.expression.right : null;
+  if (!expr || !t.isObjectExpression(expr)) {
+    throw new Error(`internal error: failed to reparse style object after appending "${propertySource}"`);
+  }
+  ir.container.expression = expr;
+}
 
 /**
  * Sets one CSS property's px value on a style={{...}} object, preserving
@@ -43,7 +97,7 @@ export function writeStyleProperty(ir: StyleIR, cssProperty: string, px: number)
     return { ok: true };
   }
 
-  ir.node.properties.push(t.objectProperty(t.identifier(cssProperty), t.numericLiteral(px)));
+  appendObjectProperty(ir, `${cssProperty}: ${px}`);
   return { ok: true };
 }
 
@@ -73,6 +127,6 @@ export function writeStyleColor(ir: StyleIR, cssProperty: string, value: string)
     return { ok: true };
   }
 
-  ir.node.properties.push(t.objectProperty(t.identifier(cssProperty), t.stringLiteral(value)));
+  appendObjectProperty(ir, `${cssProperty}: ${JSON.stringify(value)}`);
   return { ok: true };
 }

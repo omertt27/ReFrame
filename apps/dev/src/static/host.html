@@ -105,6 +105,35 @@
         min-width: 0;
         display: flex;
         flex-direction: column;
+        position: relative;
+      }
+      /* Friendly, transient confirmation for an action that already
+         happened (a drag-drop reorder) — "Moved" is what a person actually
+         wants to know, not the raw diff/reparenting mechanics underneath
+         (still visible in the Properties panel's "Last diff" for anyone who
+         wants it). Shown via the .visible class (see showToast), which
+         triggers the opacity/transform transition; hidden again by removing
+         it after a short delay. */
+      #reframe-toast {
+        position: absolute;
+        top: 14px;
+        left: 50%;
+        transform: translate(-50%, -8px);
+        background: #1c1c1f;
+        border: 1px solid #333;
+        color: #f5f5f5;
+        font-size: 13px;
+        padding: 7px 14px;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        z-index: 50;
+      }
+      #reframe-toast.visible {
+        opacity: 1;
+        transform: translate(-50%, 0);
       }
       #viewport-switcher {
         flex: none;
@@ -241,22 +270,30 @@
          not "click element, look across the screen at a side panel." The
          side panel stays as the full/advanced inspector, not the main
          interaction surface. */
+      /* Light/white pill, unlike the rest of the (still dark) app chrome —
+         this is the one surface you're looking at WHILE editing, directly
+         over the canvas, so it gets the Canva-reference treatment; the
+         side panels stay dark dev-tool chrome deliberately, see the
+         reframe-toolbar-inline-controls / wix-canva-analysis project
+         memory for why the toolbar itself was already the right target. */
       #canvas-toolbar {
         position: absolute;
         display: none;
         gap: 2px;
-        background: #1c1c1f;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 3px;
-        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+        background: #ffffff;
+        border: 1px solid #e5e5ea;
+        border-radius: 12px;
+        padding: 4px;
+        box-shadow:
+          0 6px 20px rgba(20, 20, 30, 0.15),
+          0 1px 3px rgba(20, 20, 30, 0.08);
         z-index: 5;
       }
       .toolbar-btn {
         background: none;
         border: none;
-        color: #d0d0d3;
-        border-radius: 5px;
+        color: #4a4a52;
+        border-radius: 8px;
         padding: 6px 10px;
         font-size: 12px;
         cursor: pointer;
@@ -266,12 +303,12 @@
         white-space: nowrap;
       }
       .toolbar-btn:hover {
-        background: #2a2a2e;
-        color: #fff;
+        background: #f2f2f7;
+        color: #1c1c1f;
       }
       .toolbar-btn.active {
-        background: rgba(99, 102, 241, 0.2);
-        color: #a5a8f7;
+        background: rgba(99, 102, 241, 0.12);
+        color: #6366f1;
       }
       .toolbar-btn .icon {
         font-size: 13px;
@@ -279,17 +316,17 @@
       .toolbar-btn-delete {
         margin-left: 4px;
         padding-left: 8px;
-        border-left: 1px solid #333;
-        color: #b0b0b4;
+        border-left: 1px solid #e5e5ea;
+        color: #8a8a90;
       }
       .toolbar-btn-delete:hover {
-        background: rgba(239, 68, 68, 0.15);
-        color: #f87171;
+        background: rgba(239, 68, 68, 0.08);
+        color: #dc2626;
       }
       .toolbar-sep {
         width: 1px;
         align-self: stretch;
-        background: #333;
+        background: #e5e5ea;
         margin: 3px 2px;
       }
       /* The most-reached-for control (font size) shown directly in the
@@ -302,6 +339,12 @@
         gap: 2px;
         padding: 0 2px;
       }
+      /* Base .stepper-btn/.stepper-value stay dark-on-dark below — they're
+         also the base the sidebar's .number-input-row steppers extend
+         (border/background only, not color), so recoloring the base itself
+         would silently break the (deliberately still-dark) side panel's
+         steppers. The toolbar's own font-size stepper gets its light
+         colors from the scoped #canvas-toolbar rule right after. */
       .stepper-btn {
         background: none;
         border: none;
@@ -317,9 +360,16 @@
         background: #2a2a2e;
         color: #fff;
       }
+      #canvas-toolbar .stepper-btn {
+        color: #4a4a52;
+      }
+      #canvas-toolbar .stepper-btn:hover {
+        background: #f2f2f7;
+        color: #1c1c1f;
+      }
       .stepper-value {
         font-size: 12px;
-        color: #f5f5f5;
+        color: #1c1c1f;
         min-width: 26px;
         text-align: center;
       }
@@ -329,33 +379,76 @@
         width: 20px;
         height: 20px;
         border-radius: 50%;
-        border: 1.5px solid #444;
+        border: 1.5px solid #d8d8de;
         cursor: pointer;
         padding: 0;
         flex: none;
       }
       .toolbar-swatch:hover {
-        border-color: #888;
+        border-color: #a0a0a8;
       }
       .toolbar-swatch.empty {
-        background: repeating-conic-gradient(#2a2a2e 0% 25%, #1c1c1f 0% 50%) 50% / 8px 8px;
+        background: repeating-conic-gradient(#e5e5ea 0% 25%, #ffffff 0% 50%) 50% / 8px 8px;
       }
       .toolbar-swatch.active {
-        border-color: #a5a8f7;
+        border-color: #6366f1;
       }
+      /* Spawned directly from the (now light) toolbar — same surface, so
+         it gets the same light treatment. Its field/input styling is
+         SHARED with the (still-dark) sidebar via propertyField/colorField
+         generating identical markup for both — scoped under #canvas-popup
+         below rather than changed at the base .field/.field input level,
+         same reasoning as the stepper-btn scoping above. */
       #canvas-popup {
         position: absolute;
         display: none;
         width: 240px;
-        background: #17171a;
-        border: 1px solid #2a2a2e;
-        border-radius: 10px;
+        background: #ffffff;
+        border: 1px solid #e5e5ea;
+        border-radius: 12px;
         padding: 14px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+        box-shadow:
+          0 10px 28px rgba(20, 20, 30, 0.18),
+          0 2px 6px rgba(20, 20, 30, 0.08);
         z-index: 6;
       }
       #canvas-popup .field:last-child {
         margin-bottom: 0;
+      }
+      #canvas-popup .field label {
+        color: #6b6b75;
+      }
+      #canvas-popup .field input,
+      #canvas-popup .field textarea {
+        background: #f7f7fa;
+        border: 1px solid #e2e2e8;
+        color: #1c1c1f;
+      }
+      #canvas-popup .field .unavailable {
+        color: #9a9aa2;
+      }
+      #canvas-popup .color-input-row input[type="color"] {
+        border-color: #e2e2e8;
+      }
+      #canvas-popup .color-input-row select.font-preset-select {
+        background: #f7f7fa;
+        border: 1px solid #e2e2e8;
+        color: #1c1c1f;
+      }
+      #canvas-popup .recent-color-swatch {
+        border-color: #e2e2e8;
+      }
+      #canvas-popup .number-input-row .stepper-btn {
+        border: 1px solid #e2e2e8;
+        background: #f7f7fa;
+        color: #4a4a52;
+      }
+      #canvas-popup .number-input-row .stepper-btn:hover {
+        background: #eeeef2;
+        color: #1c1c1f;
+      }
+      #canvas-popup .empty {
+        color: #9a9aa2;
       }
       #properties {
         width: 320px;
@@ -756,6 +849,7 @@
             <div id="canvas-toolbar"></div>
             <div id="canvas-popup"></div>
           </div>
+          <div id="reframe-toast"></div>
         </div>
         <div id="properties">
           <div class="panel-header"><button class="panel-toggle" data-panel="properties" title="Collapse">›</button><h2>Properties</h2></div>
@@ -863,6 +957,17 @@
         overlay.style.width = rect.width + "px";
         overlay.style.height = rect.height + "px";
         overlay.style.display = "block";
+      }
+
+      var toastTimer = null;
+      function showToast(text) {
+        var toast = document.getElementById("reframe-toast");
+        toast.textContent = text;
+        toast.classList.add("visible");
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () {
+          toast.classList.remove("visible");
+        }, 1400);
       }
 
       function propAvailable(key) {
@@ -1585,7 +1690,10 @@
       // Everything NOT promoted to an inline control below (see
       // updateCanvasToolbar) — reachable via the toolbar's "More" button,
       // same popup mechanism as before, just for a smaller leftover set.
-      var MORE_KEYS = ["fontWeight", "lineHeight", "letterSpacing", "padding", "width", "height"];
+      // width/height get their OWN toolbar button+popup, not this one — see
+      // hasSize below — since "resize" is common enough to want one click,
+      // not two (toolbar → More → scroll to Width).
+      var MORE_KEYS = ["fontWeight", "lineHeight", "letterSpacing", "padding"];
       var openPopupGroup = null;
 
       function keyAvailable(key) {
@@ -1619,6 +1727,13 @@
         },
         more: function () {
           return renderGroupFields(MORE_KEYS) || '<div class="empty">Nothing else editable here.</div>';
+        },
+        // Real, always-typable number-input-row fields (click the number,
+        // type a new one — the same markup the sidebar uses, steppers
+        // included), not just the drag handles — dragging a handle you
+        // can't see the exact px value on is much harder than typing one.
+        size: function () {
+          return renderGroupFields(["width", "height"]) || '<div class="empty">Nothing resizable here.</div>';
         },
       };
 
@@ -1790,10 +1905,29 @@
         var hasFontSize = keyAvailable("fontSize");
         var hasTextColor = keyAvailable("textColor");
         var hasBgColor = keyAvailable("backgroundColor");
+        var hasWidth = keyAvailable("width");
+        var hasHeight = keyAvailable("height");
+        var hasSize = hasWidth || hasHeight;
         var hasMore = MORE_KEYS.some(keyAvailable);
         var canDelete = canDeleteCurrent();
         var canDuplicate = canDuplicateCurrent();
-        if (!canEditText && !hasFontSize && !hasTextColor && !hasBgColor && !hasMore && !canDelete && !canDuplicate) {
+
+        // The drag handles are rendered once, statically, in the HTML shell
+        // (they follow the selection rect, not the toolbar's own re-render)
+        // — but a handle that's visible and draggable while doing NOTHING
+        // on release (because this element has no editable width/height at
+        // all, common on real PrivaPDF pages with no explicit size classes)
+        // is exactly the "fake affordance" this project refuses elsewhere.
+        // Synced here, every time selection resolves, same as every other
+        // *Available flag on this page.
+        var handleE = document.querySelector(".handle-e");
+        var handleS = document.querySelector(".handle-s");
+        var handleSE = document.querySelector(".handle-se");
+        if (handleE) handleE.style.display = hasWidth ? "" : "none";
+        if (handleS) handleS.style.display = hasHeight ? "" : "none";
+        if (handleSE) handleSE.style.display = hasSize ? "" : "none";
+
+        if (!canEditText && !hasFontSize && !hasTextColor && !hasBgColor && !hasSize && !hasMore && !canDelete && !canDuplicate) {
           toolbar.style.display = "none";
           return;
         }
@@ -1817,7 +1951,10 @@
         }
         if (hasTextColor) parts.push(renderColorSwatch("textColor", "Text color"));
         if (hasBgColor) parts.push(renderColorSwatch("backgroundColor", "Background color"));
-        if ((canEditText || hasFontSize || hasTextColor || hasBgColor) && hasMore) parts.push('<div class="toolbar-sep"></div>');
+        if (hasSize) {
+          parts.push('<button class="toolbar-btn" id="toolbar-size-btn" title="Width &amp; height"><span class="icon">⤢</span></button>');
+        }
+        if ((canEditText || hasFontSize || hasTextColor || hasBgColor || hasSize) && hasMore) parts.push('<div class="toolbar-sep"></div>');
         if (hasMore) parts.push('<button class="toolbar-btn" id="toolbar-more-btn" title="More properties"><span class="icon">⋯</span></button>');
         if (canDuplicate) {
           parts.push('<button class="toolbar-btn" id="toolbar-duplicate-btn" title="Duplicate this element"><span class="icon">⧉</span></button>');
@@ -1854,6 +1991,13 @@
             toggleCanvasPopup(btn.getAttribute("data-swatch"), btn);
           });
         });
+        var sizeBtn = document.getElementById("toolbar-size-btn");
+        if (sizeBtn) {
+          sizeBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            toggleCanvasPopup("size", sizeBtn);
+          });
+        }
         var moreBtn = document.getElementById("toolbar-more-btn");
         if (moreBtn) {
           moreBtn.addEventListener("click", function (event) {
@@ -2192,6 +2336,7 @@
               route: data.route,
               fromIndex: data.fromIndex,
               toIndex: data.toIndex,
+              insertBefore: data.insertBefore,
               fromName: data.fromName,
               toName: data.toName,
             }),
@@ -2201,7 +2346,10 @@
             })
             .then(function (result) {
               diffEl.textContent = result.ok ? result.diff || "(no textual change)" : "error: " + result.error;
-              if (result.ok) refreshHistory();
+              if (result.ok) {
+                refreshHistory();
+                showToast("Moved");
+              }
             })
             .catch(function (err) {
               diffEl.textContent = "error: " + err;

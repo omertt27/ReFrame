@@ -19,8 +19,16 @@ function chunkStart(children: t.JSXElement["children"], elementRawIndex: number)
  * Moves a JSX element to a new index among its parent's element children
  * (indexed by element position, ignoring whitespace/text nodes when
  * counting), carrying its leading indentation along with it.
+ *
+ * `insertBefore` picks which side of `elements[toIndex]` the moved element
+ * lands on. Omitted, it falls back to direction-of-travel (moving forward
+ * lands after the target, backward lands before it) — the original
+ * behavior, kept as the default so every existing caller is unaffected.
+ * Passed explicitly, it lets a caller with real cursor position (e.g. which
+ * half of the target the pointer is over during a drag) express "before" or
+ * "after" directly instead of it being an accident of fromIndex/toIndex.
  */
-export function moveChild(parent: t.JSXElement | t.JSXFragment, fromIndex: number, toIndex: number): void {
+export function moveChild(parent: t.JSXElement | t.JSXFragment, fromIndex: number, toIndex: number, insertBefore?: boolean): void {
   const elements = jsxChildren(parent.children);
   const moved = elements[fromIndex];
   if (!moved) {
@@ -37,8 +45,8 @@ export function moveChild(parent: t.JSXElement | t.JSXFragment, fromIndex: numbe
   const chunk = parent.children.splice(movedChunkStart, movedRawIndex - movedChunkStart + 1);
 
   const targetRawIndex = parent.children.indexOf(target);
-  const movingForward = toIndex > fromIndex;
-  const insertionIndex = movingForward ? targetRawIndex + 1 : chunkStart(parent.children, targetRawIndex);
+  const before = insertBefore !== undefined ? insertBefore : toIndex < fromIndex;
+  const insertionIndex = before ? chunkStart(parent.children, targetRawIndex) : targetRawIndex + 1;
 
   parent.children.splice(insertionIndex, 0, ...chunk);
 }
