@@ -809,6 +809,11 @@
         padding: 8px 10px;
         margin-bottom: 8px;
         font-size: 12px;
+        cursor: pointer;
+      }
+      .change-group:hover {
+        border-color: #f4a340;
+        background: #1a1a1d;
       }
       .change-breadcrumb {
         font-weight: 600;
@@ -1798,8 +1803,19 @@
       var MORE_KEYS = ["fontWeight", "lineHeight", "letterSpacing", "padding"];
       var openPopupGroup = null;
 
+      // Every EDITABLE_PROPERTIES key is always PRESENT in the response
+      // (available or not — see e.g. textColor's "not set on this element
+      // yet" case), so checking just `values[key]` truthiness was really
+      // checking "does this key exist," which is always true — it let the
+      // floating toolbar render a stepper/swatch for a property the server
+      // had explicitly refused (available: false), and clicking it sent a
+      // mutate request with no backend to write to (a 400: "expected {
+      // component, route, scope, property, backend, px }"). The side panel's
+      // propertyField/colorField already correctly gate on `.available`;
+      // this brings the toolbar's gating in line with them.
       function keyAvailable(key) {
-        return !!(current && current.properties && current.properties.editable && current.properties.values[key]);
+        var values = current && current.properties && current.properties.editable && current.properties.values;
+        return !!(values && values[key] && values[key].available);
       }
 
       function closeCanvasPopup() {
@@ -1962,7 +1978,8 @@
       // it's actually currently rendering and nudge from there.
       function stepFontSize(delta) {
         var prop = current.properties.values.fontSize;
-        if (prop && prop.available && prop.px !== null) {
+        if (!prop || !prop.available) return; // refuse — no backend to write to; keyAvailable should already keep this from being reachable, but never guess a mutation without one
+        if (prop.px !== null) {
           applyFontSizeStep(prop.px + delta);
           return;
         }
@@ -2741,7 +2758,15 @@
           var key = h.breadcrumb.join(" / ") + "::" + h.filePath;
           var group = key === lastKey ? groups[groups.length - 1] : null;
           if (!group) {
-            group = { breadcrumb: h.breadcrumb, filePath: h.filePath, props: [], propIndex: {} };
+            group = {
+              breadcrumb: h.breadcrumb,
+              filePath: h.filePath,
+              component: h.component,
+              route: h.route,
+              path: h.path,
+              props: [],
+              propIndex: {},
+            };
             groups.push(group);
             lastKey = key;
           }
@@ -2787,7 +2812,13 @@
                   })
                   .join("");
                 return (
-                  '<div class="change-group"><div class="change-breadcrumb">' +
+                  '<div class="change-group" title="Click to select this element on the canvas" data-component="' +
+                  escapeHtml(g.component) +
+                  '" data-route="' +
+                  escapeHtml(g.route) +
+                  '" data-path="' +
+                  escapeHtml(JSON.stringify(g.path || [])) +
+                  '"><div class="change-breadcrumb">' +
                   g.breadcrumb.map(escapeHtml).join(" / ") +
                   "</div>" +
                   rows +
@@ -2869,6 +2900,21 @@
         document.getElementById("changes-body").style.display = "";
         document.getElementById("btn-review").style.display = "";
       }
+
+      // Bidirectional nav: clicking a Changes card jumps the canvas back to
+      // the exact element it describes — the same call a Pages-tree click
+      // already makes, just fed from a history entry's component/route/path
+      // instead of a tree row's data attributes. Delegated on the
+      // never-replaced #changes-body container since its innerHTML (the
+      // cards themselves) gets fully rebuilt on every refreshHistory().
+      document.getElementById("changes-body").addEventListener("click", function (event) {
+        var card = event.target.closest(".change-group");
+        if (!card) return;
+        var component = card.getAttribute("data-component");
+        var route = card.getAttribute("data-route");
+        var path = JSON.parse(card.getAttribute("data-path") || "[]");
+        if (component && typeof route === "string") selectFromTree(route, component, path);
+      });
 
       document.getElementById("btn-review").addEventListener("click", showReviewPanel);
       document.getElementById("btn-review-back").addEventListener("click", hideReviewPanel);

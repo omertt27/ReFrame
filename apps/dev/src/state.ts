@@ -16,6 +16,13 @@ export interface HistoryEntry {
   propertyLabel: string;
   beforeValue: string;
   afterValue: string;
+  /** Enough to re-run the exact same selection this edit was made against
+   * (component + route + ElementPath) — lets the Changes panel jump the
+   * canvas back to the element a card describes, the same call a Pages-tree
+   * click already makes. */
+  component: string;
+  route: string;
+  path: number[];
 }
 
 /** Mutable, shared across the proxy and host servers — both must always

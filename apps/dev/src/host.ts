@@ -686,6 +686,9 @@ interface ChangeMeta {
   propertyLabel: string;
   beforeValue: string;
   afterValue: string;
+  component: string;
+  route: string;
+  path: number[];
 }
 
 function recordAndWrite(state: AppState, filePath: string, before: string, meta: ChangeMeta) {
@@ -769,6 +772,9 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
           propertyLabel: h.propertyLabel,
           beforeValue: h.beforeValue,
           afterValue: h.afterValue,
+          component: h.component,
+          route: h.route,
+          path: h.path,
         })),
         canRedo: state.redoStack.length > 0,
         pendingCount: state.history.length - state.reviewedCount,
@@ -1013,6 +1019,9 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
                 propertyLabel: propDef.label,
                 beforeValue: beforeValue ?? "not set",
                 afterValue: value,
+                component,
+                route,
+                path: hasPath ? path! : [],
               });
               sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
               return;
@@ -1089,6 +1098,9 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               propertyLabel: propDef.label,
               beforeValue: beforePx !== null ? `${beforePx}px` : "not set",
               afterValue: `${px}px`,
+              component,
+              route,
+              path: hasPath ? path! : [],
             });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
@@ -1131,6 +1143,9 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               propertyLabel: "Text",
               beforeValue: `"${truncate(beforeValue ?? "")}"`,
               afterValue: `"${truncate(value)}"`,
+              component,
+              route,
+              path: path ?? [],
             });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
@@ -1182,6 +1197,12 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               propertyLabel: "Removed",
               beforeValue: `<${label}>`,
               afterValue: "—",
+              component,
+              route,
+              // The deleted element no longer exists at this path — jumping
+              // "back to it" means the component's own root, not the (now
+              // gone) nested node.
+              path: [],
             });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
@@ -1231,6 +1252,9 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               propertyLabel: "Duplicated",
               beforeValue: "—",
               afterValue: `<${label}>`,
+              component,
+              route,
+              path,
             });
 
             sendJson(res, 200, { ok: true, filePath: def.filePath, diff });
@@ -1271,6 +1295,13 @@ export function startHostServer(hostPort: number, proxyPort: number, state: AppS
               propertyLabel: "Position",
               beforeValue: fromName ?? "Section",
               afterValue: `moved to ${toName ?? "new position"}`,
+              // No single element was "the one edited" here — a reorder is
+              // page-level. Jumping to it means the page's own root, the
+              // closest equivalent to what a Pages-tree click on this page
+              // already resolves to.
+              component: pageDef.name,
+              route,
+              path: [],
             });
 
             sendJson(res, 200, { ok: true, filePath: pageDef.filePath, diff });
