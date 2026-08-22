@@ -1351,20 +1351,36 @@
             el.classList.remove("active");
           });
         }
-        // A Pages-tree selection has no click rect at all — clear any rect
-        // left over from a previous canvas click so updateCanvasToolbar
-        // (called once resolve completes) correctly hides the toolbar
-        // rather than anchoring it to a stale, now-unrelated position.
+        // A Pages-tree/Changes-card selection has no click rect of its own —
+        // clear any rect left over from a previous canvas click immediately
+        // so updateCanvasToolbar (called once resolve completes) doesn't
+        // anchor to a stale, now-unrelated position. If the iframe CAN
+        // resolve this path back to a live element, its own "select" reply
+        // (handled below, same as a real click) replaces this with the real
+        // rect and highlight — this is only the interim/fallback state.
         updateSelectionOverlay(null);
+
+        // Bidirectional nav: ask the iframe to find and highlight/scroll to
+        // the live element this path names, reusing preload.js's own
+        // selectElement() so a panel-driven jump ends up looking identical
+        // to a real click having landed there. Best-effort — some entries
+        // (a deleted element, a page-level reorder) have no element left to
+        // find, in which case the iframe simply never replies and the
+        // fallback above stands.
+        function sendSelectPath() {
+          if (component) postToFrame({ type: "reframe-select-path", component: component, route: route, path: path || [] });
+        }
 
         var proxyOrigin = new URL(iframe.src).origin;
         var currentPath = new URL(iframe.src).pathname;
         if (currentPath === route) {
           resolveSelection(component, route, path);
+          sendSelectPath();
         } else {
           iframe.src = proxyOrigin + route;
           setTimeout(function () {
             resolveSelection(component, route, path);
+            sendSelectPath();
           }, 900);
         }
       }

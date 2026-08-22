@@ -662,6 +662,119 @@
     true,
   );
 
+  // Inverse of resolveClick: given a known component's name, finds the
+  // fiber resolveClick would have anchored path-building on for it — same
+  // fn-vs-debugInfo distinction, found via a plain top-down fiber tree walk
+  // (there's no clicked leaf to ascend from here). Depth-first pre-order
+  // naturally lands on the OUTERMOST occurrence first, matching
+  // resolveClick's own "the extended debugInfo boundary IS the correct
+  // anchor" / "the fn match itself is exact and final" — no chain-extension
+  // step needed, that only exists to recover from ascending into an INNER
+  // fiber first, which a top-down search never does. Doesn't disambiguate
+  // multiple instances of the same component on one page (first found
+  // wins) — no worse than resolveClick's own single-instance ElementPath
+  // model already assumes elsewhere.
+  function findComponentFiber(name) {
+    var bodyFiber = getFiber(document.body);
+    if (!bodyFiber) return null;
+    var root = bodyFiber;
+    while (root.return) root = root.return;
+    var found = null;
+    function walk(fiber) {
+      if (found || !fiber) return;
+      var fn = fnMatchName(fiber, [name]);
+      if (fn) {
+        found = { fiber: fiber, via: "fn" };
+        return;
+      }
+      var db = debugInfoMatchName(fiber, [name]);
+      if (db) {
+        found = { fiber: fiber, via: "debugInfo" };
+        return;
+      }
+      walk(fiber.child);
+      if (found) return;
+      walk(fiber.sibling);
+    }
+    walk(root);
+    return found;
+  }
+
+  // The `index`-th element-producing child of `fiber` (same owner-scoped
+  // counting siblingIndex uses walking UP a path — see its own comment —
+  // mirrored here walking DOWN one level). `wantOwner` stays fixed for the
+  // whole descent, same as resolveClick's matchedOwnerType never changing
+  // partway through a walk: a real component's own type reference for an
+  // fn-matched anchor, or null (count every element-producing child
+  // unfiltered) for a debugInfo-matched one. This matches resolveClick's
+  // actual behavior exactly — a foreign-owned nested component's own
+  // internals never contribute separate path depth there (they collapse to
+  // the single slot its own invocation fiber occupies), so this never needs
+  // to look inside one to find a match; only the next slot at THIS level.
+  function nthElementProducingChild(fiber, index, wantOwner) {
+    var cursor = fiber.child;
+    var i = 0;
+    while (cursor) {
+      if (isElementProducing(cursor) && (wantOwner === null || ownerType(cursor) === wantOwner)) {
+        if (i === index) return cursor;
+        i++;
+      }
+      cursor = cursor.sibling;
+    }
+    return null;
+  }
+
+  // Walks a component's own ElementPath (root-to-leaf order — see
+  // resolveClick's final path.reverse()) back down to the fiber it names.
+  // Best-effort: if a level can't be found (the live tree no longer matches
+  // what the path was recorded against — e.g. conditional rendering changed
+  // since the edit), stops and returns the deepest ancestor still resolved
+  // rather than failing the whole lookup — a "close enough" jump is more
+  // useful here than none at all, for a convenience nav feature.
+  function resolvePathToFiber(match, path) {
+    var current = match.via === "fn" ? match.fiber.child : match.fiber;
+    var wantOwner = match.via === "fn" ? match.fiber.type : null;
+    for (var i = 0; i < path.length; i++) {
+      var next = nthElementProducingChild(current, path[i], wantOwner);
+      if (!next) break;
+      current = next;
+    }
+    return current;
+  }
+
+  // A resolved path can land on a component-invocation fiber (no DOM of its
+  // own — e.g. it stopped at a nested <Link>, same boundary resolveClick
+  // itself stops at) or a Fragment (transparent, no DOM either — common for
+  // a debugInfo-matched root). Descends via .child until landing on a real
+  // host fiber, whose stateNode IS the DOM node.
+  function fiberToDomNode(fiber) {
+    var node = fiber;
+    var depth = 0;
+    while (node && typeof node.type !== "string" && depth < 60) {
+      node = node.child;
+      depth++;
+    }
+    return node && node.stateNode instanceof Element ? node.stateNode : null;
+  }
+
+  // Bidirectional nav: the host's Changes/Pages panels know a selection's
+  // {component, path} but have no DOM node of their own to highlight/scroll
+  // to — this is what turns that back into a live element. Reuses
+  // selectElement() itself for the actual highlight/scroll/postMessage-back
+  // once resolved, so a panel-driven jump looks identical to a real click
+  // having landed there. `skipTagCheck: true` because this is a
+  // reconstructed lookup, not an authoritative click — never guess a tag
+  // match server-side off it.
+  window.addEventListener("message", function (event) {
+    var data = event.data;
+    if (!data || data.type !== "reframe-select-path" || data.route !== window.location.pathname) return;
+    var match = findComponentFiber(data.component);
+    if (!match) return;
+    var fiber = resolvePathToFiber(match, data.path || []);
+    var el = fiberToDomNode(fiber);
+    if (el) selectElement(el, { component: data.component, path: data.path || [], skipTagCheck: true });
+  });
+
   // Selection-navigation keyboard shortcuts (Escape/Tab/Shift+Tab), reusing
   // resolveClick itself rather than any separate path-arithmetic — same "no
   // fake affordance" principle as the hover outline above: a shortcut only
