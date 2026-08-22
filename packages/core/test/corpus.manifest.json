@@ -1,0 +1,11 @@
+[
+  {
+    "name": "excalidraw",
+    "repo": "https://github.com/excalidraw/excalidraw.git",
+    "commit": "e160ff7ba0641fba729c528482de5277ffb19c58",
+    "subdir": "packages/excalidraw/components",
+    "license": "MIT",
+    "componentCountFloor": 100,
+    "why": "A Vite + React app with no Next.js app/ convention and components written almost entirely as const X = () => {} arrow functions, rather than PrivaPDF/basic-tailwind-app's function X() {} style. buildComponentGraph originally found zero components here because it only recognized function declarations -- this floor guards that regression."
+  }
+]

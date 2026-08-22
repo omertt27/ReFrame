@@ -5,3 +5,10 @@ dist/
 
 # manual local test scaffold, never intended for the repo
 /fixtures/
+
+# real-repo test corpus (packages/core/test:corpus) -- fetched on demand
+# from pinned upstream commits by `pnpm --filter core corpus:fetch`, per
+# packages/core/test/corpus.manifest.json. Never committed: it's verbatim
+# third-party source, not this repo's code.
+/packages/core/test/fixtures/corpus/*
+!/packages/core/test/fixtures/corpus/.gitkeep

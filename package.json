@@ -4,6 +4,8 @@
   "packageManager": "pnpm@11.22.0",
   "scripts": {
     "test": "pnpm --filter core test",
+    "corpus:fetch": "pnpm --filter core corpus:fetch",
+    "test:corpus": "pnpm --filter core test:corpus",
     "build": "pnpm --filter core build"
   }
 }

@@ -11,6 +11,14 @@
   The source stays yours.
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/editor-overview.png" width="49%" alt="ReFrame editor: Pages/Layers tree on the left, live canvas in the middle, properties panel on the right" />
+  <img src="docs/screenshots/element-selected.png" width="49%" alt="A selected heading with the floating toolbar, resize handles, and populated typography/color properties" />
+</p>
+<p align="center">
+  <sub>Live against the bundled <code>fixtures/onlook-validation-app</code> — the same setup in <a href="#getting-started">Getting started</a> below.</sub>
+</p>
+
 ---
 
 ## What this is
@@ -158,6 +166,35 @@ pnpm start ../../path/to/your-nextjs-app 3000
 `apps/dev` assumes `next dev` is already running on the target port — it doesn't spawn it for you
 in this slice. There's a small bundled fixture app for trying this out immediately without a real
 project: `fixtures/onlook-validation-app`.
+
+## Testing against real code
+
+`pnpm test` (150+ tests) runs against a single hand-written fixture (`basic-tailwind-app`) and is
+fast enough to run on every save. It's necessary but not sufficient — several real bugs (arrow-
+function-defined components going completely undetected, recast reprinting introducing diff noise
+on an untouched file) were only ever caught by manually clicking through a real, unmodified
+third-party app.
+
+`pnpm test:corpus` runs the same headless engine (parse → resolve → mutate → write) against real,
+public repos, asserting things a human live-testing session checks by eye: every file parses
+cleanly, component detection doesn't regress below a pinned floor, an untouched file reprints
+byte-identical (no diff noise), and a sample of real elements survive a mutate-then-revert round
+trip exactly. It's slower and kept out of the default `pnpm test` run on purpose.
+
+The corpus itself is never committed to this repo — `test/fixtures/corpus/` is gitignored, since
+it would otherwise mean vendoring third-party source into an unrelated project's git history. Run
+`pnpm corpus:fetch` first: it pulls each repo listed in `packages/core/test/corpus.manifest.json`
+from a pinned upstream commit (one shallow `git fetch` per repo) into that gitignored directory.
+`pnpm test:corpus` reports (via `console.warn`, not a false-green skip) any manifest entry that
+hasn't been fetched yet, rather than silently testing nothing for it. Both `pnpm test` and
+`pnpm corpus:fetch && pnpm test:corpus` run on every push/PR as separate jobs in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+To add a new repo after a real-app testing session turns up a new bug class: add an entry to
+`corpus.manifest.json` (repo URL, pinned commit, subdir, a `why` describing which bug class it
+guards, and the component count `pnpm test:corpus` should hold the line at). The fix should land
+with a corpus entry that guards it, not just a memory of the session — a bug found once and only
+remembered can come back.
 
 ## Status
 

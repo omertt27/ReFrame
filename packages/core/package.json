@@ -8,6 +8,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "corpus:fetch": "tsx scripts/fetch-corpus.ts",
+    "test:corpus": "vitest run test/corpus.test.ts --config vitest.corpus.config.ts",
     "cli": "tsx src/cli.ts"
   },
   "dependencies": {
